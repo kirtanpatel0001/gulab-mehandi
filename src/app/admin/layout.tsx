@@ -33,7 +33,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       if (!profile || profile.role !== 'admin') {
         router.push('/'); // Kick non-admins out
       } else {
-        setUserEmail(session.user.email);
+        // Fix applied here: gracefully handle if email is undefined
+        setUserEmail(session.user.email ?? null);
         setLoading(false); // Let them in
       }
     };
