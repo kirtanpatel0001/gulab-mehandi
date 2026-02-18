@@ -31,8 +31,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Your cart is empty or invalid." }, { status: 400 });
     }
 
-    // 2. SERVER-SIDE MATH
-    const totalAmount = cartItems.reduce((total, item) => {
+    // 2. SERVER-SIDE MATH (FIXED: Added ': any' to bypass strict Vercel type checking)
+    const totalAmount = cartItems.reduce((total: number, item: any) => {
       const price = Array.isArray(item.product) ? item.product[0].price : item.product.price;
       return total + (price * item.quantity);
     }, 0);
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
       receipt: `rcpt_${userId.substring(0, 8)}_${Date.now()}`,
     });
 
-    // 4. SAVE PENDING ORDER TO SUPABASE (Strict Schema Match)
+    // 4. SAVE PENDING ORDER TO SUPABASE
     const { data: orderData, error: orderError } = await supabaseAdmin.from('orders').insert([{
       user_id: userId,
       shipping_address_id: addressId,
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
       total_amount: totalAmount,
       currency: currency,
       razorpay_order_id: razorpayOrder.id,
-      status: 'pending' // It starts as pending until they pay!
+      status: 'pending' 
     }]).select().single();
 
     if (orderError) throw orderError;
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     // 5. SEND DATA BACK TO FRONTEND
     return NextResponse.json({
       id: razorpayOrder.id,
-      db_order_id: orderData.id, // We need this to redirect to the invoice later!
+      db_order_id: orderData.id, 
       amount: razorpayOrder.amount,
       currency: razorpayOrder.currency,
     });
