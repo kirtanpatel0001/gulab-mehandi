@@ -259,10 +259,26 @@ export default function Navbar() {
     if (error) setCartItems(snapshot); 
   }, []);
 
+  // --- BULLETPROOF SIGN-OUT FUNCTION ---
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    closeAllMenus();
-    router.push('/login'); 
+    try {
+      // 1. Tell Supabase to destroy the session securely
+      await supabase.auth.signOut();
+      
+      // 2. Instantly wipe local state so UI updates without waiting for network
+      setUser(null);
+      setUserRole(null);
+      setCartItems([]);
+      
+      // 3. Close the menus
+      closeAllMenus();
+      
+      // 4. Redirect and force cache refresh
+      router.push('/login'); 
+      router.refresh();
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
   };
 
   const getInitial = () => {
