@@ -25,7 +25,8 @@ const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 export default function ReviewsPage() {
   const isCacheValid = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
 
-  const [reviews, setReviews] = useState<Review[]>(isCacheValid ? globalCachedReviews.data : []);
+  // --- FIX: Added optional chaining (?.) and fallback to satisfy Vercel's strict TS checks ---
+  const [reviews, setReviews] = useState<Review[]>(isCacheValid ? (globalCachedReviews?.data || []) : []);
   const [loading, setLoading] = useState(!isCacheValid);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -33,17 +34,14 @@ export default function ReviewsPage() {
   const [rating, setRating] = useState(5);
   const [imageFile, setImageFile] = useState<File | null>(null);
 
-  // --- FIX 2: MODAL SCROLL LOCK ---
   useEffect(() => {
     document.body.style.overflow = isModalOpen ? 'hidden' : 'auto';
     return () => { document.body.style.overflow = 'auto'; };
   }, [isModalOpen]);
 
-  // --- FIX 1: ZERO-CHURN MEMOIZED FETCH ---
   const fetchReviews = useCallback(async (isForcedRefresh = false) => {
     const validCache = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
     
-    // Completely stable loading condition with no feedback loops
     if ((!validCache || isForcedRefresh) && !globalCachedReviews) {
       setLoading(true);
     }
@@ -69,7 +67,7 @@ export default function ReviewsPage() {
     } finally {
       setLoading(false); 
     }
-  }, []); // <-- Empty dependency array!
+  }, []); 
 
   useEffect(() => {
     fetchReviews();
