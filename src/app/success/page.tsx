@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { downloadInvoicePDF } from '@/lib/utils/pdf'; 
 
-export default function SuccessPage() {
+// 1. Rename your main component and remove 'export default'
+function SuccessContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const orderId = searchParams.get('order_id');
@@ -335,5 +336,18 @@ export default function SuccessPage() {
       {/* ========================================== */}
       
     </div>
+  );
+}
+
+// 2. Wrap the content in Suspense for Vercel
+export default function SuccessPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex justify-center items-center bg-[#FDFBF7]">
+        <div className="w-8 h-8 border-2 border-[#1B342B]/20 border-t-[#A67C52] rounded-full animate-spin"></div>
+      </div>
+    }>
+      <SuccessContent />
+    </Suspense>
   );
 }
