@@ -37,44 +37,49 @@ export default function MyOrdersPage() {
   
   const [currency, setCurrency] = useState({ code: 'INR', symbol: '₹', rate: 1 });
 
+  // 🔥 MASTER FIX: Auth Hydration & Realtime Cleanup
   useEffect(() => {
     setCurrency(detectUserCurrency());
-    
-    let realtimeChannel: any;
 
-    const fetchMyOrders = async () => {
+    let channel: any;
+    let isMounted = true;
+
+    const loadOrders = async (userId: string) => {
       setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      // FIX THE TRAP: If no session, kill the loading state BEFORE redirecting
-      if (!session) {
-        setLoading(false); 
-        router.push('/login');
-        return;
-      }
 
-      // Initial Fetch
       const { data, error } = await supabase
         .from('orders')
         .select(`*, shipping_address:user_addresses(*)`)
-        .eq('user_id', session.user.id)
+        .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
-      if (error) console.error("Error fetching orders:", error);
-      if (data) setOrders(data);
-      
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('Order fetch error:', error);
+      } else {
+        setOrders(data || []);
+      }
+
       setLoading(false);
 
-      // REALTIME LISTENER: Listen for updates to orders for this user
-      realtimeChannel = supabase
-        .channel('public:orders')
+      // REALTIME (safe & scoped to user)
+      channel = supabase
+        .channel(`orders-${userId}`)
         .on(
           'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'orders', filter: `user_id=eq.${session.user.id}` },
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'orders',
+            filter: `user_id=eq.${userId}`,
+          },
           (payload) => {
-            setOrders((prevOrders) => 
-              prevOrders.map((o) => 
-                o.id === payload.new.id ? { ...o, status: payload.new.status } : o
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.id === payload.new.id
+                  ? { ...o, status: payload.new.status }
+                  : o
               )
             );
           }
@@ -82,14 +87,25 @@ export default function MyOrdersPage() {
         .subscribe();
     };
 
-    fetchMyOrders();
+    // 🔐 AUTH LISTENER (THE KEY FIX)
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (!session?.user) {
+          setLoading(false);
+          router.replace('/login');
+          return;
+        }
+
+        await loadOrders(session.user.id);
+      }
+    );
 
     return () => {
-      if (realtimeChannel) {
-        supabase.removeChannel(realtimeChannel);
-      }
+      isMounted = false;
+      if (channel) supabase.removeChannel(channel);
+      authListener.subscription.unsubscribe();
     };
-  }, [router]);
+  }, []); // 🔥 EMPTY DEP ARRAY PREVENTS ROUTER RE-RENDER LOOP
 
   // --- DIRECT PDF DOWNLOAD LOGIC ---
   const handleDownloadReceipt = async (order: any) => {

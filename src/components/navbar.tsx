@@ -60,7 +60,6 @@ export default function Navbar() {
   const desktopDropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
   const cartFetchId = useRef(0);
-  const authInitialized = useRef(false);
 
   // --- UTILS ---
   const closeAllMenus = useCallback(() => {
@@ -89,9 +88,11 @@ export default function Navbar() {
   }, [isOpen]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
     (async () => {
       try {
-        const ratesResponse = await fetch('https://open.er-api.com/v6/latest/USD');
+        const ratesResponse = await fetch('https://open.er-api.com/v6/latest/USD', { signal: controller.signal });
         const ratesData = await ratesResponse.json();
         const rates = ratesData.rates || {};
         setAllRates(rates);
@@ -100,19 +101,20 @@ export default function Navbar() {
         if (cachedCurrency && rates[cachedCurrency]) {
           setCurrency(cachedCurrency);
           setExchangeRate(rates[cachedCurrency]);
-          setIsCurrencyLoading(false);
+          if (!controller.signal.aborted) setIsCurrencyLoading(false);
           return;
         }
 
         let detectedCode = 'USD';
         try {
-          const curResponse = await fetch('https://ipapi.co/currency/');
+          const curResponse = await fetch('https://ipapi.co/currency/', { signal: controller.signal });
           if (curResponse.ok) {
             detectedCode = (await curResponse.text()).trim();
           } else {
             throw new Error("IP API Blocked");
           }
-        } catch {
+        } catch (err: any) {
+          if (err.name === 'AbortError') return;
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
           if (tz === 'Asia/Kolkata') detectedCode = 'INR';
           else if (tz.startsWith('Asia/Dubai')) detectedCode = 'AED';
@@ -127,16 +129,20 @@ export default function Navbar() {
           detectedCode = 'USD';
         }
 
-        setCurrency(detectedCode);
-        setExchangeRate(rates[detectedCode] || 1);
-        localStorage.setItem('user_currency', detectedCode);
+        if (!controller.signal.aborted) {
+          setCurrency(detectedCode);
+          setExchangeRate(rates[detectedCode] || 1);
+          localStorage.setItem('user_currency', detectedCode);
+        }
 
-      } catch (error) {
-        console.error("Currency init error:", error);
+      } catch (error: any) {
+        if (error.name !== 'AbortError') console.error("Currency init error:", error);
       } finally {
-        setIsCurrencyLoading(false);
+        if (!controller.signal.aborted) setIsCurrencyLoading(false);
       }
     })();
+
+    return () => controller.abort();
   }, []);
 
   const handleCurrencyChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -160,10 +166,9 @@ export default function Navbar() {
 
   // --- SUPABASE DATA FETCHING ---
   const fetchCartData = useCallback(async (sessionUser: User | null) => {
-    // FIX THE TRAP: Kill spinner if user is not logged in!
     if (!sessionUser) {
       setCartItems([]);
-      setIsCartLoading(false); // <--- ADDED FIX
+      setIsCartLoading(false); 
       return;
     }
     
@@ -208,17 +213,18 @@ export default function Navbar() {
     } else {
       setUserRole(null);
       setCartItems([]);
-      // Failsafe to ensure loading stops when logged out
       setIsCartLoading(false); 
     }
   }, [fetchCartData]);
 
   useEffect(() => {
-    if (authInitialized.current) return;
-    authInitialized.current = true;
+    supabase.auth.getSession().then(({ data }) => 
+      fetchUserAndRole(data.session?.user ?? null)
+    );
 
-    supabase.auth.getSession().then(({ data: { session } }) => fetchUserAndRole(session?.user ?? null));
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => fetchUserAndRole(session?.user ?? null));
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => fetchUserAndRole(session?.user ?? null)
+    );
 
     return () => authListener.subscription.unsubscribe();
   }, [fetchUserAndRole]);
@@ -230,8 +236,9 @@ export default function Navbar() {
   }, [user, fetchCartData]);
 
   useEffect(() => {
-    if (isCartOpen && user) fetchCartData(user);
-  }, [isCartOpen, user, fetchCartData]);
+    if (!isCartOpen || !user || cartItems.length > 0) return;
+    fetchCartData(user);
+  }, [isCartOpen, user, cartItems.length, fetchCartData]);
 
   // --- CART MATH & ACTIONS ---
   const cartCount = useMemo(() => cartItems.reduce((sum, item) => sum + item.quantity, 0), [cartItems]);
@@ -260,15 +267,10 @@ export default function Navbar() {
     if (error) setCartItems(snapshot); 
   }, []);
 
-  // BULLETPROOF SIGNOUT
   const handleSignOut = async () => {
     await supabase.auth.signOut();
-    setUser(null);
-    setUserRole(null);
-    setCartItems([]);
     closeAllMenus();
-    router.push('/login'); 
-    router.refresh();
+    router.replace('/login');
   };
 
   const getInitial = () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { CldImage } from 'next-cloudinary';
 
@@ -19,15 +19,15 @@ type CachedReviews = {
   timestamp: number;
 };
 
-let globalCachedReviews: CachedReviews | null = null;
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
 export default function ReviewsPage() {
-  const isCacheValid = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
-
-  // --- FIX: Added optional chaining (?.) and fallback to satisfy Vercel's strict TS checks ---
-  const [reviews, setReviews] = useState<Review[]>(isCacheValid ? (globalCachedReviews?.data || []) : []);
-  const [loading, setLoading] = useState(!isCacheValid);
+  // --- FIX: Replaced global variable with component-scoped useRef ---
+  const cacheRef = useRef<CachedReviews | null>(null);
+  
+  // Initialize with empty/loading state since ref is empty on first mount
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [loading, setLoading] = useState(true);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -39,13 +39,19 @@ export default function ReviewsPage() {
     return () => { document.body.style.overflow = 'auto'; };
   }, [isModalOpen]);
 
-  const fetchReviews = useCallback(async (isForcedRefresh = false) => {
-    const validCache = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
-    
-    if ((!validCache || isForcedRefresh) && !globalCachedReviews) {
-      setLoading(true);
+  // --- FIX: Safely check cacheRef and update state without infinite loops ---
+  const fetchReviews = useCallback(async (force = false) => {
+    const cache = cacheRef.current;
+    const isValid = cache && Date.now() - cache.timestamp < CACHE_TTL;
+
+    if (isValid && !force) {
+      setReviews(cache.data);
+      setLoading(false);
+      return;
     }
-    
+
+    setLoading(true);
+
     try {
       const { data, error } = await supabase
         .from('reviews')
@@ -55,13 +61,16 @@ export default function ReviewsPage() {
 
       if (error) {
         console.error("Error fetching reviews:", error);
-      } else if (data) {
-        globalCachedReviews = {
-          data,
-          timestamp: Date.now()
-        };
-        setReviews(data);
+        throw error;
       }
+
+      // Update cache safely
+      cacheRef.current = {
+        data: data || [],
+        timestamp: Date.now()
+      };
+      
+      setReviews(data || []);
     } catch (err) {
       console.error("Unexpected fetch error:", err);
     } finally {
@@ -125,7 +134,7 @@ export default function ReviewsPage() {
       setIsModalOpen(false);
       setImageFile(null);
       setRating(5);
-      fetchReviews(true); 
+      fetchReviews(true); // Force bypasses cache after a new review
     }
     
     setIsSubmitting(false);
