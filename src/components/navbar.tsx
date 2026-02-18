@@ -186,7 +186,7 @@ export default function Navbar() {
       if (error) {
         console.error("Supabase Cart Error:", error.message);
       } else if (data) {
-        setCartItems(data as CartItem[]); 
+       setCartItems(data as unknown as CartItem[]);
       }
     } catch (err) {
       if (fetchId === cartFetchId.current) console.error("Unexpected error fetching cart:", err);
