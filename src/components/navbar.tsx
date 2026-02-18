@@ -23,7 +23,6 @@ export type CartItem = {
 };
 
 // --- CURRENCY REGIONS ---
-// Grouping them makes the UI much cleaner for global users
 const CURRENCY_REGIONS = {
   "North America": ["USD", "CAD"],
   "Middle East": ["AED", "SAR", "QAR"],
@@ -33,7 +32,6 @@ const CURRENCY_REGIONS = {
   "Africa & Others": ["ZAR"]
 };
 
-// Flatten the list so we can easily validate detected currencies
 const SUPPORTED_CURRENCIES = Object.values(CURRENCY_REGIONS).flat();
 
 export default function Navbar() {
@@ -90,7 +88,6 @@ export default function Navbar() {
     return () => { document.body.style.overflow = 'auto'; };
   }, [isOpen]);
 
-  // --- BULLETPROOF CURRENCY INIT ---
   useEffect(() => {
     (async () => {
       try {
@@ -163,8 +160,10 @@ export default function Navbar() {
 
   // --- SUPABASE DATA FETCHING ---
   const fetchCartData = useCallback(async (sessionUser: User | null) => {
+    // FIX THE TRAP: Kill spinner if user is not logged in!
     if (!sessionUser) {
       setCartItems([]);
+      setIsCartLoading(false); // <--- ADDED FIX
       return;
     }
     
@@ -209,6 +208,8 @@ export default function Navbar() {
     } else {
       setUserRole(null);
       setCartItems([]);
+      // Failsafe to ensure loading stops when logged out
+      setIsCartLoading(false); 
     }
   }, [fetchCartData]);
 
@@ -259,26 +260,15 @@ export default function Navbar() {
     if (error) setCartItems(snapshot); 
   }, []);
 
-  // --- BULLETPROOF SIGN-OUT FUNCTION ---
+  // BULLETPROOF SIGNOUT
   const handleSignOut = async () => {
-    try {
-      // 1. Tell Supabase to destroy the session securely
-      await supabase.auth.signOut();
-      
-      // 2. Instantly wipe local state so UI updates without waiting for network
-      setUser(null);
-      setUserRole(null);
-      setCartItems([]);
-      
-      // 3. Close the menus
-      closeAllMenus();
-      
-      // 4. Redirect and force cache refresh
-      router.push('/login'); 
-      router.refresh();
-    } catch (error) {
-      console.error("Logout failed:", error);
-    }
+    await supabase.auth.signOut();
+    setUser(null);
+    setUserRole(null);
+    setCartItems([]);
+    closeAllMenus();
+    router.push('/login'); 
+    router.refresh();
   };
 
   const getInitial = () => {
@@ -304,7 +294,6 @@ export default function Navbar() {
     </>
   );
 
-  // Helper function to render the optgroups for the select dropdown
   const renderCurrencyOptions = () => {
     return Object.entries(CURRENCY_REGIONS).map(([region, regionCurrencies]) => (
       <optgroup key={region} label={region} className="font-bold text-[#1B342B]/50">
@@ -343,7 +332,6 @@ export default function Navbar() {
 
           <div className="hidden md:flex items-center space-x-5 lg:space-x-6">
             
-            {/* REGION GROUPED DESKTOP DROPDOWN */}
             <select
               value={currency}
               onChange={handleCurrencyChange}
@@ -384,7 +372,6 @@ export default function Navbar() {
 
           <div className="flex-1 md:hidden flex justify-end space-x-4 text-[#1B342B] items-center">
             
-            {/* REGION GROUPED MOBILE DROPDOWN */}
             <select
               value={currency}
               onChange={handleCurrencyChange}

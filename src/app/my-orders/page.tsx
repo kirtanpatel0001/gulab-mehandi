@@ -45,7 +45,10 @@ export default function MyOrdersPage() {
     const fetchMyOrders = async () => {
       setLoading(true);
       const { data: { session } } = await supabase.auth.getSession();
+      
+      // FIX THE TRAP: If no session, kill the loading state BEFORE redirecting
       if (!session) {
+        setLoading(false); 
         router.push('/login');
         return;
       }
