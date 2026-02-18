@@ -6,19 +6,28 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 
+// IMPORTANT: Make sure your CartDrawer component is in the right folder!
+import CartDrawer from '@/components/CartDrawer'; 
+
 export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
   
   // --- UI STATES ---
-  const [isOpen, setIsOpen] = useState(false); // Mobile Menu Drawer
-  const [isCartOpen, setIsCartOpen] = useState(false); // Cart Slide-Out
+  const [isOpen, setIsOpen] = useState(false);
+  const [isCartOpen, setIsCartOpen] = useState(false);
   const [desktopDropdownOpen, setDesktopDropdownOpen] = useState(false);
   const [mobileDropdownOpen, setMobileDropdownOpen] = useState(false);
   
   // --- DATA STATES ---
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [cartItems, setCartItems] = useState<any[]>([]);
+  const [isCartLoading, setIsCartLoading] = useState(false);
+
+  // --- CURRENCY STATES ---
+  const [currency, setCurrency] = useState('USD');
+  const [exchangeRate, setExchangeRate] = useState(1);
 
   const desktopDropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
@@ -30,7 +39,7 @@ export default function Navbar() {
     setIsCartOpen(false);
   };
 
-  // Close dropdowns if user clicks outside of them
+  // Close dropdowns if user clicks outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (desktopDropdownRef.current && !desktopDropdownRef.current.contains(event.target as Node)) {
@@ -44,37 +53,129 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // --- FETCH USER & DATABASE ROLE ---
+  // --- AUTO-DETECT CURRENCY & RATES ---
+  useEffect(() => {
+    const fetchCurrencyAndRates = async () => {
+      try {
+        const ipResponse = await fetch('https://ipapi.co/currency/');
+        const userCurrency = await ipResponse.text();
+        const rateResponse = await fetch('https://open.er-api.com/v6/latest/USD');
+        const rateData = await rateResponse.json();
+
+        if (userCurrency && rateData.rates[userCurrency.trim()]) {
+          setCurrency(userCurrency.trim());
+          setExchangeRate(rateData.rates[userCurrency.trim()]);
+        }
+      } catch (error) {
+        console.error("Could not fetch local currency. Defaulting to USD.", error);
+      }
+    };
+    fetchCurrencyAndRates();
+  }, []);
+
+  const formatPrice = (usdPrice: number) => {
+    const convertedPrice = usdPrice * exchangeRate;
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(convertedPrice);
+  };
+
+  // --- BULLETPROOF CART FETCH (Fixes Infinite Loading) ---
+  const fetchCartData = async (sessionUser: any) => {
+    if (!sessionUser) {
+      setCartItems([]);
+      return;
+    }
+    
+    setIsCartLoading(true);
+    
+    try {
+      const { data, error } = await supabase
+        .from('cart_items')
+        .select(`
+          id, quantity,
+          product:products ( id, name, price, image_url, stain_color, weight_volume )
+        `)
+        .eq('user_id', sessionUser.id) 
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error("Supabase Cart Error:", error.message);
+      } else if (data) {
+        setCartItems(data);
+      }
+    } catch (err) {
+      console.error("Unexpected error fetching cart:", err);
+    } finally {
+      // Guaranteed to turn off the loading spinner
+      setIsCartLoading(false);
+    }
+  };
+
+  // --- BULLETPROOF USER FETCH ---
   useEffect(() => {
     const fetchUserAndRole = async (sessionUser: any) => {
       setUser(sessionUser);
+      
       if (sessionUser) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', sessionUser.id)
-          .single();
+        try {
+          // .maybeSingle() prevents crashes for brand new users
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', sessionUser.id)
+            .maybeSingle(); 
+            
+          setUserRole(data?.role || 'user');
+        } catch (err) {
+          console.error("Profile Error:", err);
+          setUserRole('user');
+        }
         
-        setUserRole(data?.role || 'user');
+        fetchCartData(sessionUser); 
+        
       } else {
         setUserRole(null);
+        setCartItems([]);
       }
     };
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      fetchUserAndRole(session?.user ?? null);
-    });
+    supabase.auth.getSession().then(({ data: { session } }) => fetchUserAndRole(session?.user ?? null));
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => fetchUserAndRole(session?.user ?? null));
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      fetchUserAndRole(session?.user ?? null);
-    });
-
-    return () => {
-      authListener.subscription.unsubscribe();
-    };
+    return () => authListener.subscription.unsubscribe();
   }, []);
 
-  // --- SIGN OUT HANDLER ---
+  // Custom Event Listener for instant cart updates
+  useEffect(() => {
+    const handleCartUpdate = () => { if (user) fetchCartData(user); };
+    window.addEventListener('cartUpdated', handleCartUpdate);
+    return () => window.removeEventListener('cartUpdated', handleCartUpdate);
+  }, [user]);
+
+  // Fetch when opening the drawer
+  useEffect(() => {
+    if (isCartOpen && user) fetchCartData(user);
+  }, [isCartOpen, user]);
+
+  // --- CART ACTIONS (Optimistic UI) ---
+  const updateQuantity = async (cartId: string, currentQuantity: number, change: number) => {
+    const newQuantity = currentQuantity + change;
+    if (newQuantity < 1) return; 
+    setCartItems(prev => prev.map(item => item.id === cartId ? { ...item, quantity: newQuantity } : item));
+    await supabase.from('cart_items').update({ quantity: newQuantity }).eq('id', cartId);
+  };
+
+  const removeItem = async (cartId: string) => {
+    setCartItems(prev => prev.filter(item => item.id !== cartId));
+    await supabase.from('cart_items').delete().eq('id', cartId);
+  };
+
+  const cartSubtotalUSD = cartItems.reduce((total, item) => total + ((item.product?.price || 0) * item.quantity), 0);
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     closeAllMenus();
@@ -87,13 +188,11 @@ export default function Navbar() {
     return "U";
   };
 
-  // --- Hide Navbar on Admin Pages ---
-  if (pathname.startsWith('/admin')) {
-    return null; 
-  }
+  // Hide Navbar entirely on Admin Pages
+  if (pathname.startsWith('/admin')) return null; 
 
-  // Helper component for the Dropdown Links to keep code clean
-  const DropdownContent = () => (
+  // --- REUSABLE DROPDOWN CONTENT ---
+  const renderDropdownContent = () => (
     <>
       <div className="px-4 py-3 border-b border-[#1B342B]/10 mb-2">
         <p className="text-sm font-bold text-[#1B342B] truncate">{user?.user_metadata?.full_name || 'Client'}</p>
@@ -128,38 +227,33 @@ export default function Navbar() {
       <nav className="w-full bg-[#FDFBF7] px-4 md:px-8 py-2 sticky top-0 z-40 border-b border-[#1B342B]/10">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           
-          {/* MOBILE LEFT: Hamburger Menu */}
           <div className="flex-1 md:hidden">
             <button onClick={() => setIsOpen(true)} className="text-[#1B342B] focus:outline-none flex items-center">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
             </button>
           </div>
 
-          {/* LOGO */}
           <div className="flex justify-center md:justify-start flex-1 md:flex-none">
             <Link href="/" onClick={closeAllMenus}>
               <Image src="/LOGO/LOGO.png" alt="Gulab Mehndi Logo" width={85} height={20} className="cursor-pointer object-contain" />
             </Link>
           </div>
 
-          {/* DESKTOP LINKS */}
           <div className="hidden md:flex space-x-6 lg:space-x-8">
             <Link href="/" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Home</Link>
             <Link href="/shop" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Shop</Link>
             <Link href="/story" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Our Story</Link>
-          
             <Link href="/services" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Services</Link>
             <Link href="/gallery" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Gallery</Link>
             <Link href="/reviews" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Reviews</Link>
           </div>
 
-          {/* DESKTOP RIGHT (CART & AVATAR) */}
           <div className="hidden md:flex items-center space-x-6">
-            
-            {/* Desktop Cart Button */}
             <button onClick={() => setIsCartOpen(true)} className="relative text-[#1B342B] hover:text-[#A67C52] transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-              <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">0</span>
+              {cartItems.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-fade-in">{cartItems.length}</span>
+              )}
             </button>
             
             {user ? (
@@ -173,7 +267,7 @@ export default function Navbar() {
 
                 {desktopDropdownOpen && (
                   <div className="absolute right-0 mt-3 w-56 bg-white border border-[#1B342B]/10 rounded-sm shadow-xl py-2 z-50">
-                    <DropdownContent />
+                    {renderDropdownContent()}
                   </div>
                 )}
               </div>
@@ -188,26 +282,23 @@ export default function Navbar() {
             </Link>
           </div>
 
-          {/* MOBILE RIGHT (CART & AVATAR DROPDOWN) */}
           <div className="flex-1 md:hidden flex justify-end space-x-4 text-[#1B342B] items-center">
-            
-            {/* Mobile Cart Button */}
             <button onClick={() => setIsCartOpen(true)} className="relative text-[#1B342B] hover:text-[#A67C52] transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-              <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">0</span>
+              {cartItems.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">{cartItems.length}</span>
+              )}
             </button>
 
-            {/* Mobile Avatar & Dropdown */}
             {user ? (
                <div className="relative" ref={mobileDropdownRef}>
                  <div onClick={() => setMobileDropdownOpen(!mobileDropdownOpen)} className="w-7 h-7 rounded-full bg-[#1B342B] text-[#FDFBF7] flex items-center justify-center text-[10px] font-bold cursor-pointer">
                    {getInitial()}
                  </div>
 
-                 {/* Dropdown opens RIGHT HERE in mobile instead of side drawer */}
                  {mobileDropdownOpen && (
                    <div className="absolute right-0 mt-3 w-56 bg-white border border-[#1B342B]/10 rounded-sm shadow-xl py-2 z-50">
-                     <DropdownContent />
+                     {renderDropdownContent()}
                    </div>
                  )}
                </div>
@@ -217,50 +308,23 @@ export default function Navbar() {
               </Link>
             )}
           </div>
-
         </div>
       </nav>
 
-      {/* --- CART DRAWER (SLIDES IN FROM THE LEFT) --- */}
-      {isCartOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 transition-opacity duration-300" onClick={() => setIsCartOpen(false)}></div>
-      )}
+      {/* --- INJECT THE ISOLATED CART COMPONENT HERE --- */}
+      <CartDrawer 
+        isOpen={isCartOpen}
+        onClose={() => setIsCartOpen(false)}
+        user={user}
+        cartItems={cartItems}
+        isCartLoading={isCartLoading}
+        updateQuantity={updateQuantity}
+        removeItem={removeItem}
+        cartSubtotalUSD={cartSubtotalUSD}
+        formatPrice={formatPrice}
+      />
 
-      <div className={`fixed top-0 left-0 h-full w-[85%] max-w-[380px] bg-[#FDFBF7] z-50 transform transition-transform duration-300 ease-in-out shadow-2xl flex flex-col ${isCartOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        
-        {/* Cart Header */}
-        <div className="p-6 border-b border-[#1B342B]/10 flex justify-between items-center bg-white">
-          <h2 className="text-2xl font-serif text-[#1B342B] flex items-center">
-            Your Cart
-            <span className="ml-3 bg-[#1B342B]/5 text-[#1B342B] text-[10px] uppercase tracking-widest px-2 py-1 rounded-full font-bold">0 Items</span>
-          </h2>
-          <button onClick={() => setIsCartOpen(false)} className="text-[#1B342B]/40 hover:text-[#1B342B] transition-colors">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-        
-        {/* Cart Empty State (Placeholder until we build global cart state) */}
-        <div className="flex-1 p-8 flex flex-col justify-center items-center text-center overflow-y-auto">
-           <svg className="w-20 h-20 text-[#1B342B]/10 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-           <p className="text-[#1B342B]/60 text-sm mb-6">Your shopping cart is currently empty. Explore our organic henna cones and sealants.</p>
-           <button onClick={() => { setIsCartOpen(false); router.push('/shop'); }} className="border border-[#A67C52] text-[#A67C52] px-8 py-3 rounded-sm hover:bg-[#A67C52] hover:text-white transition-colors text-xs font-bold uppercase tracking-widest">
-             Browse Boutique
-           </button>
-        </div>
-
-        {/* Cart Footer */}
-        <div className="p-6 bg-white border-t border-[#1B342B]/10">
-          <div className="flex justify-between items-center mb-6">
-            <span className="text-xs uppercase tracking-widest font-bold text-[#1B342B]/60">Estimated Total</span>
-            <span className="text-xl font-bold text-[#1B342B]">$0.00</span>
-          </div>
-          <button disabled className="w-full bg-[#1B342B] text-white py-4 rounded-sm hover:bg-[#A67C52] transition-colors uppercase text-xs font-bold tracking-[0.2em] disabled:opacity-50 shadow-md">
-            Proceed to Checkout
-          </button>
-        </div>
-      </div>
-
-      {/* --- MAIN MOBILE NAV DRAWER (REMAINS ON THE LEFT) --- */}
+      {/* --- MOBILE MENU --- */}
       {isOpen && (
         <div className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity duration-300" onClick={closeAllMenus}></div>
       )}

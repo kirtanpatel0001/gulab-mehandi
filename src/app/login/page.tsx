@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -20,20 +20,40 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
+  // ✦ NEW: Catch OAuth users when they return from Google ✦
+  useEffect(() => {
+    const handleAuthRedirect = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await routeUser(session.user.id);
+      }
+    };
+    handleAuthRedirect();
+  }, []);
+
   // --- SMART ROUTING LOGIC ---
   const routeUser = async (userId: string) => {
-    // Securely fetch their role from the database
-    const { data: profile, error } = await supabase
+    // 1. Fetch their profile data
+    const { data: profile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, phone_number')
       .eq('id', userId)
       .single();
 
+    // 2. Are they an admin?
     if (profile?.role === 'admin') {
-      router.push('/admin'); // Send admins to the secure dashboard
-    } else {
-      router.push('/'); // Send regular clients to the homepage
+      router.push('/admin');
+      return;
     }
+
+    // 3. Are they a brand new Google user who hasn't given us a phone number yet?
+    if (!profile?.phone_number) {
+      router.push('/complete-profile');
+      return;
+    }
+
+    // 4. They are a regular, returning customer. Let them in!
+    router.push('/'); 
   };
 
   // --- 1. EMAIL SIGN UP (OTP & Extra Data) ---
@@ -48,7 +68,7 @@ export default function LoginPage() {
       options: {
         data: {
           full_name: name,
-          phone_number: phone, // Capturing the phone number right away!
+          phone_number: phone, 
         }
       }
     });
@@ -56,7 +76,7 @@ export default function LoginPage() {
     if (error) {
       setErrorMsg(error.message);
     } else {
-      setView('VERIFY'); // Forces them to the 6-digit OTP screen
+      setView('VERIFY'); 
     }
     
     setLoading(false);
@@ -100,16 +120,18 @@ export default function LoginPage() {
     setLoading(false);
   };
 
-  // --- 4. GOOGLE OAUTH LOGIN ---
+  // --- 4. ✦ SMART GOOGLE OAUTH LOGIN ✦ ---
   const handleOAuthLogin = async () => {
     setLoading(true);
     setErrorMsg("");
     
+    // Notice we REMOVED the hardcoded redirectTo! 
+    // Now Google will bring them right back to this login page,
+    // and the new useEffect at the top of the file will catch them and run routeUser()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        // We force Google users to the complete-profile page to get their phone number!
-        redirectTo: `${window.location.origin}/complete-profile`, 
+        redirectTo: `${window.location.origin}/login`, 
       }
     });
 
