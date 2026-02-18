@@ -37,16 +37,19 @@ export default function CompleteProfilePage() {
       return;
     }
 
+    // --- FIX 2: NORMALIZE PHONE NUMBER ---
+    const normalizedPhone = phone.replace(/\s+/g, '');
+
     // --- STEP A: GUARANTEE THE PHONE NUMBER SAVES ---
     const { error: profileError } = await supabase
       .from('profiles')
-      .update({ phone_number: phone })
+      .update({ phone_number: normalizedPhone })
       .eq('id', userId);
 
     if (profileError) {
       setErrorMsg("Database Error: Could not save phone number.");
       setLoading(false);
-      return; // Only stop them if the phone number fails
+      return; 
     }
 
     // --- STEP B: ATTACH PASSWORD (ONLY IF THEY TYPED ONE) ---
@@ -61,8 +64,6 @@ export default function CompleteProfilePage() {
         password: password
       });
 
-      // If Supabase rejects the password for a Google user, we log it, 
-      // but WE DO NOT STOP THE USER. They still get to go to the homepage!
       if (passwordError) {
         console.error("Password link silently failed:", passwordError.message);
       }
@@ -70,6 +71,9 @@ export default function CompleteProfilePage() {
 
     // --- STEP C: ALWAYS LET THEM IN ---
     router.push('/');
+    
+    // --- FIX 1: RESET LOADING STATE ---
+    setLoading(false);
   };
 
   return (

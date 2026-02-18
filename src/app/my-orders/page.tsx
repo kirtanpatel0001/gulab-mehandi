@@ -3,23 +3,24 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
+import { downloadInvoicePDF } from '@/lib/utils/pdf';
 
 // --- GEO-LOCATION CURRENCY LOGIC ---
 const detectUserCurrency = () => {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (tz.includes('Kolkata') || tz.includes('Calcutta') || tz.includes('Asia/Colombo')) {
-      return { code: 'INR', symbol: '₹', rate: 83.15 }; 
+      return { code: 'INR', symbol: '₹', rate: 1 };
     }
     if (tz.includes('London') || tz.includes('Europe')) {
-      return { code: 'GBP', symbol: '£', rate: 0.79 };
+      return { code: 'GBP', symbol: '£', rate: 0.0095 };
     }
     if (tz.includes('Dubai') || tz.includes('Asia/Dubai')) {
-      return { code: 'AED', symbol: 'د.إ', rate: 3.67 };
+      return { code: 'AED', symbol: 'د.إ', rate: 0.044 };
     }
-    return { code: 'USD', symbol: '$', rate: 1 };
+    return { code: 'USD', symbol: '$', rate: 0.012 };
   } catch (error) {
-    return { code: 'USD', symbol: '$', rate: 1 };
+    return { code: 'INR', symbol: '₹', rate: 1 };
   }
 };
 
@@ -28,14 +29,18 @@ export default function MyOrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Modal & Animation States
-  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
-  const [isEnvelopeOpen, setIsEnvelopeOpen] = useState(false); // Controls the 3D Animation
+  // Track which order is currently being generated into a PDF
+  const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
   
-  const [currency, setCurrency] = useState({ code: 'USD', symbol: '$', rate: 1 });
+  // Required for the hidden PDF template data binding
+  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  
+  const [currency, setCurrency] = useState({ code: 'INR', symbol: '₹', rate: 1 });
 
   useEffect(() => {
     setCurrency(detectUserCurrency());
+    
+    let realtimeChannel: any;
 
     const fetchMyOrders = async () => {
       setLoading(true);
@@ -45,178 +50,265 @@ export default function MyOrdersPage() {
         return;
       }
 
-      const { data } = await supabase
+      // Initial Fetch
+      const { data, error } = await supabase
         .from('orders')
-        .select('*')
-        .eq('customer_name', session.user.user_metadata?.full_name || 'Anonymous')
+        .select(`*, shipping_address:user_addresses(*)`)
+        .eq('user_id', session.user.id)
         .order('created_at', { ascending: false });
 
-      // LUXURY FAKE ORDER
-      const sampleOrder = {
-        id: 'ORD-9988-SAMPLE',
-        created_at: new Date().toISOString(),
-        status: 'Processing',
-        total: 45.00, 
-        items: [
-          { name: 'Signature Organic Henna Cones', qty: 2, price: 15.00 },
-          { name: 'Bridal Aftercare Sealant', qty: 1, price: 15.00 }
-        ]
-      };
-
-      if (data && data.length > 0) {
-        setOrders([...data, sampleOrder]); 
-      } else {
-        setOrders([sampleOrder]);
-      }
+      if (error) console.error("Error fetching orders:", error);
+      if (data) setOrders(data);
+      
       setLoading(false);
+
+      // REALTIME LISTENER: Listen for updates to orders for this user
+      realtimeChannel = supabase
+        .channel('public:orders')
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'orders', filter: `user_id=eq.${session.user.id}` },
+          (payload) => {
+            setOrders((prevOrders) => 
+              prevOrders.map((o) => 
+                o.id === payload.new.id ? { ...o, status: payload.new.status } : o
+              )
+            );
+          }
+        )
+        .subscribe();
     };
 
     fetchMyOrders();
+
+    return () => {
+      if (realtimeChannel) {
+        supabase.removeChannel(realtimeChannel);
+      }
+    };
   }, [router]);
 
-  // --- TRIGGER ENVELOPE ANIMATION ---
-  const handleOpenOrder = (order: any) => {
-    setSelectedOrder(order);
-    setIsEnvelopeOpen(false); // Start closed
-    // Wait 600ms so they see the sealed envelope, then pop it open!
-    setTimeout(() => {
-      setIsEnvelopeOpen(true);
-    }, 600);
-  };
-
-  const closeModal = () => {
-    setIsEnvelopeOpen(false);
-    setTimeout(() => {
+  // --- DIRECT PDF DOWNLOAD LOGIC ---
+  const handleDownloadReceipt = async (order: any) => {
+    setDownloadingOrderId(order.id);
+    setSelectedOrder(order); 
+    
+    setTimeout(async () => {
+      // Prioritizes the Razorpay ID for the filename
+      await downloadInvoicePDF('invoice-pdf-template', order.razorpay_order_id || order.id.slice(0, 8));
+      setDownloadingOrderId(null);
       setSelectedOrder(null);
-    }, 500); // Wait for letter to slide back inside before hiding modal
+    }, 150); 
   };
 
-  const formatPrice = (baseUsdPrice: number) => {
-    return `${currency.symbol}${(baseUsdPrice * currency.rate).toFixed(2)} ${currency.code !== 'USD' ? currency.code : ''}`;
+  const formatPrice = (basePrice: number) => {
+    return `${currency.symbol}${(basePrice * currency.rate).toFixed(2)}`;
+  };
+
+  const getProgressStep = (status: string) => {
+    const s = status?.toLowerCase() || 'pending';
+    if (s === 'completed' || s === 'delivered') return 4;
+    if (s === 'shipped') return 3;
+    if (s === 'processing') return 2;
+    return 1;
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFBF7] py-20 px-6">
-      <div className="max-w-4xl mx-auto">
+    <div className="min-h-screen bg-[#FDFBF7] py-20 px-4 md:px-8 relative overflow-hidden">
+      <div className="max-w-5xl mx-auto">
         
-        <header className="mb-10 text-center">
-          <h1 className="text-4xl font-serif text-[#1B342B] mb-2">My Orders</h1>
-          <p className="text-[#1B342B]/60 text-sm">Track your product purchases and shipping status.</p>
-          <div className="mt-4 inline-block bg-[#1B342B]/5 px-4 py-1.5 rounded-full border border-[#1B342B]/10">
-            <p className="text-[9px] uppercase tracking-widest font-bold text-[#A67C52]">
-              Region Detected: Showing Prices in <span className="text-[#1B342B]">{currency.code} ({currency.symbol})</span>
-            </p>
-          </div>
+        <header className="mb-12 text-center">
+          <h1 className="text-4xl font-serif text-[#1B342B] mb-2">Order History</h1>
+          <p className="text-[#1B342B]/60 text-sm">Review your past purchases and track current shipments.</p>
         </header>
 
         {loading ? (
           <div className="flex justify-center p-20">
-            <p className="text-[#A67C52] text-xs uppercase tracking-widest animate-pulse font-bold">Syncing Orders...</p>
+            <div className="w-8 h-8 border-2 border-[#1B342B]/20 border-t-[#A67C52] rounded-full animate-spin"></div>
+          </div>
+        ) : orders.length === 0 ? (
+          <div className="text-center p-20 border border-[#1B342B]/10 bg-white rounded-sm">
+            <p className="text-[#1B342B]/50 font-serif italic text-lg mb-4">You haven't placed any orders yet.</p>
+            <button onClick={() => router.push('/shop')} className="border border-[#1B342B] px-6 py-2 text-xs uppercase tracking-widest font-bold text-[#1B342B] hover:bg-[#1B342B] hover:text-white transition-colors">
+              Browse Boutique
+            </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {orders.map((order) => (
-              <div 
-                key={order.id} 
-                onClick={() => handleOpenOrder(order)}
-                className="bg-white border border-[#1B342B]/5 p-8 rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-500 cursor-pointer group"
-              >
-                <div className="flex justify-between items-start mb-6">
-                  <div>
-                    <h3 className="text-lg font-mono text-[#1B342B] font-bold">#{order.id.slice(0, 8).toUpperCase()}</h3>
-                    <p className="text-xs text-[#1B342B]/50 font-mono mt-1">
-                      {new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </p>
+          <div className="space-y-8">
+            {orders.map((order) => {
+              const currentStep = getProgressStep(order.status);
+              const isCurrentlyDownloading = downloadingOrderId === order.id;
+              
+              return (
+                <div key={order.id} className="bg-white border border-[#1B342B]/10 rounded-sm shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+                  
+                  {/* 1. PROFESSIONAL HEADER - Shows the mock_order ID clearly */}
+                  <div className="bg-[#1B342B]/5 border-b border-[#1B342B]/10 px-6 py-4 flex flex-wrap justify-between items-center gap-4">
+                    <div className="flex space-x-12">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#1B342B]/60 font-bold mb-1">Order Placed</p>
+                        <p className="text-sm font-medium text-[#1B342B]">
+                          {new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#1B342B]/60 font-bold mb-1">Total</p>
+                        <p className="text-sm font-medium text-[#1B342B] tabular-nums">{formatPrice(order.total_amount)}</p>
+                      </div>
+                    </div>
+                    <div className="text-left md:text-right">
+                      <p className="text-[10px] uppercase tracking-widest text-[#1B342B]/60 font-bold mb-1">Order #</p>
+                      <p className="text-sm font-mono text-[#1B342B]">{order.razorpay_order_id || order.id.slice(0, 8).toUpperCase()}</p>
+                    </div>
                   </div>
-                  <span className={`px-4 py-1.5 text-[9px] uppercase tracking-[0.2em] font-bold rounded-full border
-                    ${order.status === 'Completed' ? 'bg-green-50 text-green-700 border-green-200' : 
-                      order.status === 'Processing' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}`}
-                  >
-                    {order.status || 'Pending'}
-                  </span>
+
+                  {/* 2. BODY: PRODUCT DETAILS + PROGRESS TRACKER */}
+                  <div className="p-6 md:p-8 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-8">
+                    
+                    <div className="flex items-center space-x-5">
+                      <div className="w-16 h-16 bg-[#FDFBF7] border border-[#A67C52]/20 rounded-sm flex items-center justify-center shrink-0">
+                        <svg className="w-8 h-8 text-[#A67C52]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
+                      </div>
+                      <div>
+                        <p className="text-[#1B342B] font-serif text-lg">Organic Mehndi Products</p>
+                        <p className="text-xs text-[#1B342B]/60 mt-1 flex items-center">
+                          Status: <span className="ml-1 font-bold uppercase tracking-wider text-[#A67C52]">{order.status || 'PAID'}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="w-full lg:w-1/2 mt-4 lg:mt-0 px-2 md:px-0">
+                      <div className="flex items-center justify-between relative max-w-sm mx-auto lg:ml-auto lg:mr-0">
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full h-1 bg-[#1B342B]/10 z-0"></div>
+                        <div 
+                          className="absolute left-0 top-1/2 -translate-y-1/2 h-1 bg-[#A67C52] z-0 transition-all duration-1000" 
+                          style={{ width: `${((currentStep - 1) / 3) * 100}%` }}
+                        ></div>
+
+                        {['Ordered', 'Processing', 'Shipped', 'Delivered'].map((step, index) => {
+                          const stepNumber = index + 1;
+                          const isActive = currentStep >= stepNumber;
+                          
+                          return (
+                            <div key={step} className="relative z-10 flex flex-col items-center">
+                              <div className={`w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center font-bold text-[10px] md:text-xs border-2 transition-colors duration-500
+                                ${isActive ? 'bg-[#A67C52] border-[#A67C52] text-white shadow-sm' : 'bg-white border-[#1B342B]/20 text-[#1B342B]/40'}`}
+                              >
+                                {isActive ? <svg className="w-3 h-3 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg> : stepNumber}
+                              </div>
+                              <p className={`absolute -bottom-6 text-[8px] md:text-[9px] uppercase tracking-widest font-bold whitespace-nowrap ${isActive ? 'text-[#1B342B]' : 'text-[#1B342B]/40'}`}>
+                                {step}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* 3. DIRECT DOWNLOAD ACTION BAR */}
+                  <div className="px-6 py-4 bg-[#FDFBF7]/50 border-t border-[#1B342B]/5 flex justify-end">
+                    <button 
+                      onClick={() => handleDownloadReceipt(order)}
+                      disabled={isCurrentlyDownloading}
+                      className="w-full sm:w-auto bg-[#1B342B] text-white px-8 py-3 rounded-sm text-[10px] uppercase tracking-widest font-bold hover:bg-[#A67C52] transition-colors shadow-sm flex items-center justify-center space-x-2 disabled:opacity-70 disabled:cursor-not-allowed"
+                    >
+                      {isCurrentlyDownloading ? (
+                        <>
+                          <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                          <span>Downloading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Download Receipt</span>
+                          <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <div className="flex justify-between items-end border-t border-[#1B342B]/5 pt-4 mt-2">
-                   <p className="text-[10px] text-[#A67C52] font-bold uppercase tracking-widest group-hover:text-[#1B342B] transition-colors flex items-center">
-                     Open Envelope <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 19v-8.93a2 2 0 01.89-1.664l7-4.666a2 2 0 012.22 0l7 4.666A2 2 0 0121 10.07V19M3 19a2 2 0 002 2h14a2 2 0 002-2M3 19l6.75-4.5M21 19l-6.75-4.5M3 10l6.75 4.5M21 10l-6.75 4.5m0 0l-1.14.76" /></svg>
-                   </p>
-                   <p className="text-xl font-bold text-[#1B342B]">{formatPrice(order.total)}</p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
-        {/* --- THE 3D ENVELOPE MODAL --- */}
+        {/* ========================================== */}
+        {/* BULLETPROOF HIDDEN INVOICE TEMPLATE */}
+        {/* ========================================== */}
         {selectedOrder && (
-          <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-md transition-opacity" onClick={closeModal}>
-            
-            {/* Perspective container is required for 3D rotation */}
-            <div 
-              className="relative w-full max-w-sm h-64 mx-auto mt-40 perspective-[1500px]" 
-              onClick={(e) => e.stopPropagation()}
-            >
+          <div className="absolute top-[-9999px] left-[-9999px]">
+            <div id="invoice-pdf-template" style={{ width: '800px', backgroundColor: '#ffffff', padding: '60px', color: '#1B342B', fontFamily: 'Arial, sans-serif', lineHeight: '1.6', boxSizing: 'border-box' }}>
               
-              {/* Close Button floating outside */}
-              <button onClick={closeModal} className="absolute -top-32 right-0 text-white/50 hover:text-white transition-colors">
-                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-
-              {/* 1. BACK OF ENVELOPE */}
-              <div className="absolute inset-0 bg-[#8c6742] rounded-b-xl shadow-2xl z-0"></div>
-
-              {/* 2. THE RECEIPT (PAPER) - Slides up when envelope opens */}
-              <div 
-                className={`absolute left-4 right-4 bg-[#FDFBF7] shadow-xl border border-[#1B342B]/5 p-6 rounded-t-2xl transition-all duration-[1000ms] ease-in-out z-10 flex flex-col
-                  ${isEnvelopeOpen ? '-top-80 h-[380px]' : 'top-4 h-56'}`
-                }
-              >
-                <div className="text-center mb-5 mt-2">
-                  <h2 className="text-2xl font-serif text-[#1B342B] mb-1">Receipt</h2>
-                  <p className="text-[10px] text-[#A67C52] font-mono tracking-widest">#{selectedOrder.id.slice(0, 8).toUpperCase()}</p>
+              {/* HEADER */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #1B342B', paddingBottom: '40px', marginBottom: '40px' }}>
+                <div style={{ width: '50%' }}>
+                  <h2 style={{ fontSize: '32px', margin: '0 0 12px 0', fontFamily: 'serif', letterSpacing: '1px' }}>GULAB MEHNDI</h2>
+                  <div style={{ fontSize: '13px', color: '#444', lineHeight: '1.8' }}>
+                    <div style={{ display: 'block' }}>123 Heritage Art Street, Vesu</div>
+                    <div style={{ display: 'block' }}>Surat, Gujarat 395007, India</div>
+                    <div style={{ display: 'block', marginTop: '8px' }}><strong>GSTIN:</strong> 24ABCDE1234F1Z5</div>
+                  </div>
                 </div>
-
-                <div className="flex-1 overflow-y-auto pr-2">
-                  {selectedOrder.items ? (
-                    <ul className="space-y-3 mb-4">
-                      {selectedOrder.items.map((item: any, i: number) => (
-                        <li key={i} className="flex justify-between items-start text-xs border-b border-[#1B342B]/5 pb-3">
-                          <span className="text-[#1B342B] font-medium leading-tight max-w-[180px]">
-                            <span className="text-[#A67C52] font-bold mr-2">{item.qty}x</span>{item.name}
-                          </span>
-                          <span className="text-[#1B342B]/80 font-mono mt-0.5">{formatPrice(item.price * item.qty)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-[#1B342B]/60 text-center mt-10">Fetching details...</p>
-                  )}
-                </div>
-
-                <div className="mt-auto pt-4 border-t border-[#1B342B]/10 flex justify-between items-center">
-                  <span className="text-[10px] text-[#1B342B]/60 font-bold uppercase tracking-widest">Total Paid</span>
-                  <span className="text-lg text-[#1B342B] font-bold">{formatPrice(selectedOrder.total)}</span>
+                <div style={{ width: '50%', textAlign: 'right' }}>
+                  <h1 style={{ fontSize: '26px', fontWeight: 'bold', color: '#A67C52', textTransform: 'uppercase', margin: '0 0 20px 0', letterSpacing: '2px' }}>Tax Invoice</h1>
+                  <div style={{ fontSize: '13px', color: '#444', lineHeight: '1.8' }}>
+                    <div style={{ display: 'block' }}><strong>Invoice No:</strong> {selectedOrder?.razorpay_order_id || selectedOrder?.id.slice(0,8)}</div>
+                    <div style={{ display: 'block' }}><strong>Date:</strong> {new Date(selectedOrder?.created_at).toLocaleDateString('en-IN')}</div>
+                    <div style={{ display: 'block' }}><strong>Payment Status:</strong> {selectedOrder.status || 'PAID'}</div>
+                  </div>
                 </div>
               </div>
 
-              {/* 3. FRONT OF ENVELOPE (POCKET) - Covers the bottom of the paper */}
-              <div 
-                className="absolute bottom-0 left-0 w-full h-full bg-[#A67C52] rounded-b-xl z-20 shadow-[inset_0_10px_20px_rgba(0,0,0,0.1)]"
-                style={{ clipPath: 'polygon(0 0, 50% 45%, 100% 0, 100% 100%, 0 100%)' }}
-              ></div>
-
-              {/* 4. THE TOP FLAP (Folds up and backwards) */}
-              <div 
-                className={`absolute top-0 left-0 w-full h-full bg-[#9c7247] shadow-lg origin-top transition-all duration-[800ms] ease-in-out
-                  ${isEnvelopeOpen ? 'rotate-x-180 opacity-0 z-0' : 'rotate-x-0 opacity-100 z-30'}`
-                }
-                style={{ clipPath: 'polygon(0 0, 100% 0, 50% 60%)', transformStyle: 'preserve-3d' }}
-              >
-                {/* Red Wax Seal */}
-                <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-14 h-14 bg-[#7a1c1c] rounded-full flex items-center justify-center shadow-lg border-2 border-[#631414]">
-                  <span className="text-[#e6cda3] font-serif text-xl italic font-bold">G</span>
+              {/* BILLED TO */}
+              {selectedOrder?.shipping_address && (
+                <div style={{ marginBottom: '50px', width: '60%' }}>
+                  <h3 style={{ fontSize: '11px', textTransform: 'uppercase', color: '#A67C52', borderBottom: '1px solid #e5e7eb', paddingBottom: '10px', marginBottom: '16px', letterSpacing: '1px' }}>Billed To</h3>
+                  <div style={{ fontSize: '14px', color: '#222', lineHeight: '1.8', wordWrap: 'break-word' }}>
+                    <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '6px' }}>{selectedOrder.shipping_address.full_name}</div>
+                    <div style={{ display: 'block' }}>{selectedOrder.shipping_address.street_address}</div>
+                    <div style={{ display: 'block' }}>{selectedOrder.shipping_address.city}, {selectedOrder.shipping_address.state} {selectedOrder.shipping_address.postal_code}</div>
+                    <div style={{ display: 'block' }}>{selectedOrder.shipping_address.country}</div>
+                  </div>
                 </div>
+              )}
+
+              {/* TABLE */}
+              <div style={{ marginBottom: '50px' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#f9fafb' }}>
+                      <th style={{ padding: '16px', fontSize: '12px', borderBottom: '2px solid #e5e7eb', width: '70%', textTransform: 'uppercase', letterSpacing: '1px' }}>Description</th>
+                      <th style={{ padding: '16px', fontSize: '12px', borderBottom: '2px solid #e5e7eb', width: '30%', textAlign: 'right', textTransform: 'uppercase', letterSpacing: '1px' }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td style={{ padding: '24px 16px', borderBottom: '1px solid #e5e7eb', fontSize: '15px', verticalAlign: 'top', lineHeight: '1.6' }}>Organic Mehndi Products & Services</td>
+                      <td style={{ padding: '24px 16px', borderBottom: '1px solid #e5e7eb', fontSize: '15px', textAlign: 'right', verticalAlign: 'top', fontWeight: '500' }}>₹{(selectedOrder?.total_amount / 1.18).toFixed(2)}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
 
+              {/* TOTALS */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '20px' }}>
+                <div style={{ width: '65%', backgroundColor: '#f9fafb', padding: '32px', border: '1px solid #e5e7eb', borderRadius: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontSize: '15px', color: '#444' }}>
+                    <span>Subtotal</span>
+                    <span>₹{(selectedOrder?.total_amount / 1.18).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontSize: '15px', color: '#444' }}>
+                    <span>IGST (18%)</span>
+                    <span>₹{(selectedOrder?.total_amount - (selectedOrder?.total_amount / 1.18)).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '20px', paddingTop: '20px', borderTop: '2px solid #d1d5db', fontSize: '15px', fontWeight: 'bold', color: '#1B342B' }}>
+                    <span>Grand Total</span>
+                    <span>₹{selectedOrder?.total_amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+              </div>
+              
             </div>
           </div>
         )}

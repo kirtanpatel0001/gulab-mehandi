@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -20,8 +20,13 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // ✦ NEW: Catch OAuth users when they return from Google ✦
+  // --- FIX 2: STRICT MODE GUARD ---
+  const authHandled = useRef(false);
+
   useEffect(() => {
+    if (authHandled.current) return;
+    authHandled.current = true;
+
     const handleAuthRedirect = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
@@ -31,32 +36,33 @@ export default function LoginPage() {
     handleAuthRedirect();
   }, []);
 
-  // --- SMART ROUTING LOGIC ---
+  // --- FIX 1: BULLETPROOF ROUTING LOGIC ---
   const routeUser = async (userId: string) => {
-    // 1. Fetch their profile data
-    const { data: profile } = await supabase
+    // maybeSingle() prevents crashes if the row doesn't exist yet
+    const { data: profile, error } = await supabase
       .from('profiles')
       .select('role, phone_number')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
-    // 2. Are they an admin?
-    if (profile?.role === 'admin') {
-      router.push('/admin');
-      return;
+    if (error) {
+      console.error("Profile fetch error:", error.message);
     }
 
-    // 3. Are they a brand new Google user who hasn't given us a phone number yet?
-    if (!profile?.phone_number) {
+    // If there is no profile yet, or no phone number, force them to complete it
+    if (!profile || !profile.phone_number) {
       router.push('/complete-profile');
       return;
     }
 
-    // 4. They are a regular, returning customer. Let them in!
+    if (profile.role === 'admin') {
+      router.push('/admin');
+      return;
+    }
+
     router.push('/'); 
   };
 
-  // --- 1. EMAIL SIGN UP (OTP & Extra Data) ---
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -82,7 +88,6 @@ export default function LoginPage() {
     setLoading(false);
   };
 
-  // --- 2. VERIFY 6-DIGIT OTP ---
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -103,7 +108,6 @@ export default function LoginPage() {
     setLoading(false);
   };
 
-  // --- 3. STANDARD EMAIL LOGIN ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -120,14 +124,10 @@ export default function LoginPage() {
     setLoading(false);
   };
 
-  // --- 4. ✦ SMART GOOGLE OAUTH LOGIN ✦ ---
   const handleOAuthLogin = async () => {
     setLoading(true);
     setErrorMsg("");
     
-    // Notice we REMOVED the hardcoded redirectTo! 
-    // Now Google will bring them right back to this login page,
-    // and the new useEffect at the top of the file will catch them and run routeUser()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -200,7 +200,6 @@ export default function LoginPage() {
             {/* EMAIL FORM */}
             <form onSubmit={view === 'LOGIN' ? handleLogin : handleSignUp} className="flex flex-col space-y-4">
               
-              {/* Show Name and Phone fields ONLY when Signing Up */}
               {view === 'SIGNUP' && (
                 <>
                   <div className="flex flex-col space-y-1.5">
@@ -210,7 +209,7 @@ export default function LoginPage() {
                       required 
                       value={name} 
                       onChange={(e) => setName(e.target.value)} 
-                      placeholder="e.g. Kirtan Patel" 
+                      placeholder="e.g. Jane Doe" 
                       className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none" 
                     />
                   </div>

@@ -106,14 +106,12 @@ export default function CartDrawer({
                     </span>
                     
                     <div className="flex justify-between items-end mt-auto">
-                      {/* Refined Quantity Selector */}
                       <div className="flex items-center border border-[#1B342B]/15 rounded-sm h-7 md:h-8 bg-[#FDFBF7]">
                         <button onClick={() => updateQuantity(item.id, item.quantity, -1)} className="w-7 md:w-8 h-full flex items-center justify-center text-[#1B342B]/60 hover:text-[#1B342B] hover:bg-[#1B342B]/5 transition-colors text-sm font-medium">−</button>
                         <span className="w-6 md:w-8 text-center text-[11px] md:text-xs font-medium text-[#1B342B] tabular-nums">{item.quantity}</span>
                         <button onClick={() => updateQuantity(item.id, item.quantity, 1)} className="w-7 md:w-8 h-full flex items-center justify-center text-[#1B342B]/60 hover:text-[#1B342B] hover:bg-[#1B342B]/5 transition-colors text-sm font-medium">+</button>
                       </div>
                       
-                      {/* Premium Typography for Item Price */}
                       <span className="font-sans text-sm md:text-base text-[#1B342B] font-medium tracking-wide tabular-nums">
                         {formatPrice((item.product?.price || 0) * item.quantity)}
                       </span>
@@ -132,14 +130,23 @@ export default function CartDrawer({
               <span className="text-[10px] md:text-xs uppercase tracking-[0.2em] font-semibold text-[#1B342B]/50 pb-1">
                 Estimated Total
               </span>
-              {/* Premium Typography for Subtotal */}
               <span className="text-xl md:text-2xl font-sans text-[#1B342B] font-medium tracking-wider tabular-nums">
                 {formatPrice(cartSubtotalUSD)}
               </span>
             </div>
-            <button className="w-full bg-[#1B342B] text-[#FDFBF7] py-4 rounded-sm hover:bg-[#A67C52] transition-colors duration-300 uppercase text-[11px] md:text-xs font-semibold tracking-[0.2em] shadow-lg hover:shadow-xl">
+            
+            {/* --- THE FIX: ROUTING AND CLOSING DRAWER --- */}
+            <button 
+              onClick={() => {
+                onClose();
+                router.push('/checkout');
+              }}
+              className="w-full bg-[#1B342B] text-[#FDFBF7] py-4 rounded-sm hover:bg-[#A67C52] transition-colors duration-300 uppercase text-[11px] md:text-xs font-semibold tracking-[0.2em] shadow-lg hover:shadow-xl"
+            >
               Proceed to Checkout
             </button>
+            {/* ------------------------------------------ */}
+            
             <p className="text-center text-[#1B342B]/40 text-[9px] mt-4 tracking-wider uppercase">
               Shipping & taxes calculated at checkout
             </p>

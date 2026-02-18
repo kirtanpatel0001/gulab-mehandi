@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { CldImage } from 'next-cloudinary';
 
@@ -14,24 +14,37 @@ interface Review {
   created_at: string;
 }
 
-// 🚀 THE MAGIC TRICK: Global Cache Variable
-// Because this is OUTSIDE the component, it survives when you change pages!
-let globalCachedReviews: Review[] | null = null;
+type CachedReviews = {
+  data: Review[];
+  timestamp: number;
+};
+
+let globalCachedReviews: CachedReviews | null = null;
+const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
 export default function ReviewsPage() {
-  // If we already have cached reviews, start with them instantly and SKIP the loading screen
-  const [reviews, setReviews] = useState<Review[]>(globalCachedReviews || []);
-  const [loading, setLoading] = useState(!globalCachedReviews);
+  const isCacheValid = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
+
+  const [reviews, setReviews] = useState<Review[]>(isCacheValid ? globalCachedReviews.data : []);
+  const [loading, setLoading] = useState(!isCacheValid);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rating, setRating] = useState(5);
   const [imageFile, setImageFile] = useState<File | null>(null);
 
-  // --- OPTIMIZED & CACHED FETCH ---
-  const fetchReviews = async (isForcedRefresh = false) => {
-    // Only show the loading spinner if we don't have cached data, OR if we force a refresh (like after submitting a new review)
-    if (!globalCachedReviews || isForcedRefresh) {
+  // --- FIX 2: MODAL SCROLL LOCK ---
+  useEffect(() => {
+    document.body.style.overflow = isModalOpen ? 'hidden' : 'auto';
+    return () => { document.body.style.overflow = 'auto'; };
+  }, [isModalOpen]);
+
+  // --- FIX 1: ZERO-CHURN MEMOIZED FETCH ---
+  const fetchReviews = useCallback(async (isForcedRefresh = false) => {
+    const validCache = globalCachedReviews && (Date.now() - globalCachedReviews.timestamp < CACHE_TTL);
+    
+    // Completely stable loading condition with no feedback loops
+    if ((!validCache || isForcedRefresh) && !globalCachedReviews) {
       setLoading(true);
     }
     
@@ -45,8 +58,10 @@ export default function ReviewsPage() {
       if (error) {
         console.error("Error fetching reviews:", error);
       } else if (data) {
-        // Save the fresh data to our global vault for next time!
-        globalCachedReviews = data;
+        globalCachedReviews = {
+          data,
+          timestamp: Date.now()
+        };
         setReviews(data);
       }
     } catch (err) {
@@ -54,21 +69,25 @@ export default function ReviewsPage() {
     } finally {
       setLoading(false); 
     }
-  };
+  }, []); // <-- Empty dependency array!
 
   useEffect(() => {
-    // This will instantly use the cache, but silently fetch in the background to keep it fresh
     fetchReviews();
-  }, []);
+  }, [fetchReviews]);
 
   const handleSubmitReview = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
 
+    if (imageFile && imageFile.size > 5 * 1024 * 1024) {
+      alert("Image must be under 5MB.");
+      setIsSubmitting(false);
+      return;
+    }
+
     const formData = new FormData(e.currentTarget);
     let uploadedImageUrl = null;
 
-    // 1. CLOUDINARY UPLOAD 
     if (imageFile) {
       const cloudinaryData = new FormData();
       cloudinaryData.append('file', imageFile);
@@ -91,12 +110,13 @@ export default function ReviewsPage() {
       }
     }
 
-    // 2. SUPABASE DATABASE INSERT
+    const safeRating = Math.min(5, Math.max(1, rating));
+
     const { error } = await supabase.from('reviews').insert([{
       name: formData.get('name'),
       location: formData.get('location'),
       quote: formData.get('quote'),
-      rating: rating,
+      rating: safeRating,
       image_url: uploadedImageUrl,
     }]);
 
@@ -107,17 +127,17 @@ export default function ReviewsPage() {
       setIsModalOpen(false);
       setImageFile(null);
       setRating(5);
-      // Force a hard refresh so the user instantly sees their new review
       fetchReviews(true); 
     }
     
     setIsSubmitting(false);
   };
 
+  const starArray = useMemo(() => [1, 2, 3, 4, 5], []);
+
   return (
     <section className="min-h-screen bg-[#FDFBF7] w-full pb-24 relative">
       
-      {/* HEADER SECTION */}
       <div className="max-w-5xl mx-auto px-6 pt-24 pb-16 text-center">
         <span className="text-[#A67C52] tracking-[0.3em] text-xs font-semibold uppercase mb-4 block">
           Client Diaries
@@ -137,7 +157,6 @@ export default function ReviewsPage() {
         </button>
       </div>
 
-      {/* REVIEWS GRID */}
       <div className="max-w-[1400px] mx-auto px-6 md:px-12">
         {loading ? (
           <div className="flex justify-center items-center h-40">
@@ -157,7 +176,6 @@ export default function ReviewsPage() {
                 key={review.id} 
                 className="break-inside-avoid bg-white border border-[#1B342B]/10 p-8 rounded-sm shadow-sm hover:shadow-xl transition-all duration-500 group"
               >
-                {/* CLOUDINARY IMAGE COMPONENT */}
                 {review.image_url && (
                   <div className="relative w-full h-64 mb-6 rounded-sm overflow-hidden bg-[#1B342B]/5">
                     <CldImage 
@@ -172,9 +190,8 @@ export default function ReviewsPage() {
                   </div>
                 )}
 
-                {/* Star Rating */}
                 <div className="flex space-x-1 mb-6">
-                  {[...Array(review.rating)].map((_, i) => (
+                  {starArray.slice(0, review.rating).map((_, i) => (
                     <svg key={i} className="w-4 h-4 text-[#A67C52]" fill="currentColor" viewBox="0 0 20 20">
                       <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
                     </svg>
@@ -195,7 +212,6 @@ export default function ReviewsPage() {
         )}
       </div>
 
-      {/* --- WRITE A REVIEW MODAL --- */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm transition-opacity">
           <div className="bg-[#FDFBF7] w-full max-w-2xl rounded-sm p-8 md:p-12 relative max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl">
@@ -225,11 +241,10 @@ export default function ReviewsPage() {
                 </div>
               </div>
 
-              {/* Star Rating */}
               <div className="flex flex-col space-y-2">
                 <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Rating</label>
                 <div className="flex space-x-2">
-                  {[1, 2, 3, 4, 5].map((star) => (
+                  {starArray.map((star) => (
                     <button 
                       key={star} 
                       type="button" 
@@ -249,7 +264,6 @@ export default function ReviewsPage() {
                 <textarea name="quote" required rows={4} placeholder="Tell us about your stain, the design process, and your event..." className="border border-[#1B342B]/15 p-3.5 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none resize-none transition-shadow hover:shadow-sm" />
               </div>
 
-              {/* Image Upload Box */}
               <div className="flex flex-col space-y-2">
                 <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80 flex justify-between items-end">
                   <span>Attach a Photo (Optional)</span>

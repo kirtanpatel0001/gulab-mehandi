@@ -1,13 +1,40 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import type { User } from '@supabase/supabase-js';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 
-// IMPORTANT: Make sure your CartDrawer component is in the right folder!
 import CartDrawer from '@/components/CartDrawer'; 
+
+export type CartItem = {
+  id: string;
+  quantity: number;
+  product: {
+    id: string;
+    name: string;
+    price: number;
+    image_url: string;
+    stain_color?: string;
+    weight_volume?: string;
+  } | null;
+};
+
+// --- CURRENCY REGIONS ---
+// Grouping them makes the UI much cleaner for global users
+const CURRENCY_REGIONS = {
+  "North America": ["USD", "CAD"],
+  "Middle East": ["AED", "SAR", "QAR"],
+  "Asia": ["INR", "SGD", "JPY"],
+  "Europe": ["EUR", "GBP"],
+  "Oceania": ["AUD", "NZD"],
+  "Africa & Others": ["ZAR"]
+};
+
+// Flatten the list so we can easily validate detected currencies
+const SUPPORTED_CURRENCIES = Object.values(CURRENCY_REGIONS).flat();
 
 export default function Navbar() {
   const router = useRouter();
@@ -20,26 +47,31 @@ export default function Navbar() {
   const [mobileDropdownOpen, setMobileDropdownOpen] = useState(false);
   
   // --- DATA STATES ---
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const [cartItems, setCartItems] = useState<any[]>([]);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [isCartLoading, setIsCartLoading] = useState(false);
 
   // --- CURRENCY STATES ---
   const [currency, setCurrency] = useState('USD');
   const [exchangeRate, setExchangeRate] = useState(1);
+  const [allRates, setAllRates] = useState<Record<string, number>>({});
+  const [isCurrencyLoading, setIsCurrencyLoading] = useState(true);
 
+  // --- REFS ---
   const desktopDropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
+  const cartFetchId = useRef(0);
+  const authInitialized = useRef(false);
 
-  const closeAllMenus = () => {
+  // --- UTILS ---
+  const closeAllMenus = useCallback(() => {
     setIsOpen(false);
     setDesktopDropdownOpen(false);
     setMobileDropdownOpen(false);
     setIsCartOpen(false);
-  };
+  }, []);
 
-  // Close dropdowns if user clicks outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (desktopDropdownRef.current && !desktopDropdownRef.current.contains(event.target as Node)) {
@@ -53,27 +85,73 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // --- AUTO-DETECT CURRENCY & RATES ---
   useEffect(() => {
-    const fetchCurrencyAndRates = async () => {
-      try {
-        const ipResponse = await fetch('https://ipapi.co/currency/');
-        const userCurrency = await ipResponse.text();
-        const rateResponse = await fetch('https://open.er-api.com/v6/latest/USD');
-        const rateData = await rateResponse.json();
+    document.body.style.overflow = isOpen ? 'hidden' : 'auto';
+    return () => { document.body.style.overflow = 'auto'; };
+  }, [isOpen]);
 
-        if (userCurrency && rateData.rates[userCurrency.trim()]) {
-          setCurrency(userCurrency.trim());
-          setExchangeRate(rateData.rates[userCurrency.trim()]);
+  // --- BULLETPROOF CURRENCY INIT ---
+  useEffect(() => {
+    (async () => {
+      try {
+        const ratesResponse = await fetch('https://open.er-api.com/v6/latest/USD');
+        const ratesData = await ratesResponse.json();
+        const rates = ratesData.rates || {};
+        setAllRates(rates);
+
+        const cachedCurrency = localStorage.getItem('user_currency');
+        if (cachedCurrency && rates[cachedCurrency]) {
+          setCurrency(cachedCurrency);
+          setExchangeRate(rates[cachedCurrency]);
+          setIsCurrencyLoading(false);
+          return;
         }
+
+        let detectedCode = 'USD';
+        try {
+          const curResponse = await fetch('https://ipapi.co/currency/');
+          if (curResponse.ok) {
+            detectedCode = (await curResponse.text()).trim();
+          } else {
+            throw new Error("IP API Blocked");
+          }
+        } catch {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (tz === 'Asia/Kolkata') detectedCode = 'INR';
+          else if (tz.startsWith('Asia/Dubai')) detectedCode = 'AED';
+          else if (tz.startsWith('Asia/Riyadh')) detectedCode = 'SAR';
+          else if (tz.startsWith('Europe/')) detectedCode = 'EUR';
+          else if (tz === 'Europe/London') detectedCode = 'GBP';
+          else if (tz.startsWith('Australia/')) detectedCode = 'AUD';
+          else if (tz.startsWith('America/Toronto') || tz.startsWith('America/Vancouver')) detectedCode = 'CAD';
+        }
+
+        if (!SUPPORTED_CURRENCIES.includes(detectedCode) || !rates[detectedCode]) {
+          detectedCode = 'USD';
+        }
+
+        setCurrency(detectedCode);
+        setExchangeRate(rates[detectedCode] || 1);
+        localStorage.setItem('user_currency', detectedCode);
+
       } catch (error) {
-        console.error("Could not fetch local currency. Defaulting to USD.", error);
+        console.error("Currency init error:", error);
+      } finally {
+        setIsCurrencyLoading(false);
       }
-    };
-    fetchCurrencyAndRates();
+    })();
   }, []);
 
-  const formatPrice = (usdPrice: number) => {
+  const handleCurrencyChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newCurr = e.target.value;
+    setCurrency(newCurr);
+    if (allRates[newCurr]) {
+      setExchangeRate(allRates[newCurr]);
+    }
+    localStorage.setItem('user_currency', newCurr);
+  }, [allRates]);
+
+  const formatPrice = useCallback((usdPrice: number) => {
     const convertedPrice = usdPrice * exchangeRate;
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -81,15 +159,16 @@ export default function Navbar() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     }).format(convertedPrice);
-  };
+  }, [currency, exchangeRate]);
 
-  // --- BULLETPROOF CART FETCH (Fixes Infinite Loading) ---
-  const fetchCartData = async (sessionUser: any) => {
+  // --- SUPABASE DATA FETCHING ---
+  const fetchCartData = useCallback(async (sessionUser: User | null) => {
     if (!sessionUser) {
       setCartItems([]);
       return;
     }
     
+    const fetchId = ++cartFetchId.current;
     setIsCartLoading(true);
     
     try {
@@ -102,79 +181,83 @@ export default function Navbar() {
         .eq('user_id', sessionUser.id) 
         .order('created_at', { ascending: true });
 
+      if (fetchId !== cartFetchId.current) return;
+
       if (error) {
         console.error("Supabase Cart Error:", error.message);
       } else if (data) {
-        setCartItems(data);
+        setCartItems(data as CartItem[]); 
       }
     } catch (err) {
-      console.error("Unexpected error fetching cart:", err);
+      if (fetchId === cartFetchId.current) console.error("Unexpected error fetching cart:", err);
     } finally {
-      // Guaranteed to turn off the loading spinner
-      setIsCartLoading(false);
+      if (fetchId === cartFetchId.current) setIsCartLoading(false);
     }
-  };
+  }, []);
 
-  // --- BULLETPROOF USER FETCH ---
-  useEffect(() => {
-    const fetchUserAndRole = async (sessionUser: any) => {
-      setUser(sessionUser);
-      
-      if (sessionUser) {
-        try {
-          // .maybeSingle() prevents crashes for brand new users
-          const { data, error } = await supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', sessionUser.id)
-            .maybeSingle(); 
-            
-          setUserRole(data?.role || 'user');
-        } catch (err) {
-          console.error("Profile Error:", err);
-          setUserRole('user');
-        }
-        
-        fetchCartData(sessionUser); 
-        
-      } else {
-        setUserRole(null);
-        setCartItems([]);
+  const fetchUserAndRole = useCallback(async (sessionUser: User | null) => {
+    setUser(sessionUser);
+    
+    if (sessionUser) {
+      try {
+        const { data, error } = await supabase.from('profiles').select('role').eq('id', sessionUser.id).maybeSingle(); 
+        setUserRole(data?.role || 'user');
+      } catch (err) {
+        setUserRole('user');
       }
-    };
+      fetchCartData(sessionUser); 
+    } else {
+      setUserRole(null);
+      setCartItems([]);
+    }
+  }, [fetchCartData]);
+
+  useEffect(() => {
+    if (authInitialized.current) return;
+    authInitialized.current = true;
 
     supabase.auth.getSession().then(({ data: { session } }) => fetchUserAndRole(session?.user ?? null));
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => fetchUserAndRole(session?.user ?? null));
 
     return () => authListener.subscription.unsubscribe();
-  }, []);
+  }, [fetchUserAndRole]);
 
-  // Custom Event Listener for instant cart updates
   useEffect(() => {
     const handleCartUpdate = () => { if (user) fetchCartData(user); };
     window.addEventListener('cartUpdated', handleCartUpdate);
     return () => window.removeEventListener('cartUpdated', handleCartUpdate);
-  }, [user]);
+  }, [user, fetchCartData]);
 
-  // Fetch when opening the drawer
   useEffect(() => {
     if (isCartOpen && user) fetchCartData(user);
-  }, [isCartOpen, user]);
+  }, [isCartOpen, user, fetchCartData]);
 
-  // --- CART ACTIONS (Optimistic UI) ---
-  const updateQuantity = async (cartId: string, currentQuantity: number, change: number) => {
+  // --- CART MATH & ACTIONS ---
+  const cartCount = useMemo(() => cartItems.reduce((sum, item) => sum + item.quantity, 0), [cartItems]);
+  const cartSubtotalUSD = useMemo(() => cartItems.reduce((total, item) => total + ((item.product?.price || 0) * item.quantity), 0), [cartItems]);
+
+  const updateQuantity = useCallback(async (cartId: string, currentQuantity: number, change: number) => {
     const newQuantity = currentQuantity + change;
     if (newQuantity < 1) return; 
+
     setCartItems(prev => prev.map(item => item.id === cartId ? { ...item, quantity: newQuantity } : item));
-    await supabase.from('cart_items').update({ quantity: newQuantity }).eq('id', cartId);
-  };
+    const { error } = await supabase.from('cart_items').update({ quantity: newQuantity }).eq('id', cartId);
+    
+    if (error) {
+      setCartItems(prev => prev.map(item => item.id === cartId ? { ...item, quantity: currentQuantity } : item));
+    }
+  }, []);
 
-  const removeItem = async (cartId: string) => {
-    setCartItems(prev => prev.filter(item => item.id !== cartId));
-    await supabase.from('cart_items').delete().eq('id', cartId);
-  };
-
-  const cartSubtotalUSD = cartItems.reduce((total, item) => total + ((item.product?.price || 0) * item.quantity), 0);
+  const removeItem = useCallback(async (cartId: string) => {
+    let snapshot: CartItem[] = []; 
+    setCartItems(prev => {
+      snapshot = prev;
+      return prev.filter(item => item.id !== cartId);
+    });
+    
+    const { error } = await supabase.from('cart_items').delete().eq('id', cartId);
+    if (error) setCartItems(snapshot); 
+  }, []);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -188,39 +271,33 @@ export default function Navbar() {
     return "U";
   };
 
-  // Hide Navbar entirely on Admin Pages
   if (pathname.startsWith('/admin')) return null; 
 
-  // --- REUSABLE DROPDOWN CONTENT ---
   const renderDropdownContent = () => (
     <>
       <div className="px-4 py-3 border-b border-[#1B342B]/10 mb-2">
         <p className="text-sm font-bold text-[#1B342B] truncate">{user?.user_metadata?.full_name || 'Client'}</p>
         <p className="text-[10px] text-[#1B342B]/60 truncate">{user?.email}</p>
       </div>
-      
       {userRole === 'admin' && (
-        <Link href="/admin" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold flex items-center">
-          <svg className="w-4 h-4 mr-2 text-[#A67C52]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-          Admin Dashboard
-        </Link>
+        <Link href="/admin" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold">Admin Dashboard</Link>
       )}
-
-      <Link href="/my-appointments" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold flex items-center">
-        <svg className="w-4 h-4 mr-2 text-[#A67C52]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-        My Appointments
-      </Link>
-      <Link href="/my-orders" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold flex items-center">
-        <svg className="w-4 h-4 mr-2 text-[#A67C52]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-        My Orders
-      </Link>
-
-      <button onClick={handleSignOut} className="w-full text-left px-4 py-2 text-xs text-red-600 hover:bg-red-50 font-semibold transition-colors mt-1 border-t border-[#1B342B]/10 flex items-center">
-        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-        Sign Out
-      </button>
+      <Link href="/my-appointments" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold">My Appointments</Link>
+      <Link href="/my-orders" onClick={closeAllMenus} className="block px-4 py-2 text-xs text-[#1B342B] hover:bg-[#1B342B]/5 font-semibold">My Orders</Link>
+      <button onClick={handleSignOut} className="w-full text-left px-4 py-2 text-xs text-red-600 hover:bg-red-50 font-semibold mt-1 border-t border-[#1B342B]/10">Sign Out</button>
     </>
   );
+
+  // Helper function to render the optgroups for the select dropdown
+  const renderCurrencyOptions = () => {
+    return Object.entries(CURRENCY_REGIONS).map(([region, regionCurrencies]) => (
+      <optgroup key={region} label={region} className="font-bold text-[#1B342B]/50">
+        {regionCurrencies.map(c => (
+          <option key={c} value={c} className="font-medium text-[#1B342B]">{c}</option>
+        ))}
+      </optgroup>
+    ));
+  };
 
   return (
     <>
@@ -248,23 +325,30 @@ export default function Navbar() {
             <Link href="/reviews" className="text-[#1B342B] font-medium hover:text-[#A67C52] transition-colors duration-300 border-b-2 border-transparent hover:border-[#A67C52] pb-0.5">Reviews</Link>
           </div>
 
-          <div className="hidden md:flex items-center space-x-6">
+          <div className="hidden md:flex items-center space-x-5 lg:space-x-6">
+            
+            {/* REGION GROUPED DESKTOP DROPDOWN */}
+            <select
+              value={currency}
+              onChange={handleCurrencyChange}
+              disabled={isCurrencyLoading}
+              className="bg-transparent text-[#1B342B] text-sm font-semibold focus:outline-none cursor-pointer hover:text-[#A67C52] transition-colors disabled:opacity-50"
+            >
+              {renderCurrencyOptions()}
+            </select>
+
             <button onClick={() => setIsCartOpen(true)} className="relative text-[#1B342B] hover:text-[#A67C52] transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-              {cartItems.length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-fade-in">{cartItems.length}</span>
+              {cartCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-fade-in">{cartCount}</span>
               )}
             </button>
             
             {user ? (
               <div className="relative" ref={desktopDropdownRef}>
-                <div 
-                  onClick={() => setDesktopDropdownOpen(!desktopDropdownOpen)}
-                  className="w-8 h-8 rounded-full bg-[#1B342B] text-[#FDFBF7] flex items-center justify-center text-xs font-bold hover:bg-[#A67C52] transition-colors shadow-sm cursor-pointer select-none"
-                >
+                <div onClick={() => setDesktopDropdownOpen(!desktopDropdownOpen)} className="w-8 h-8 rounded-full bg-[#1B342B] text-[#FDFBF7] flex items-center justify-center text-xs font-bold hover:bg-[#A67C52] transition-colors shadow-sm cursor-pointer select-none">
                   {getInitial()}
                 </div>
-
                 {desktopDropdownOpen && (
                   <div className="absolute right-0 mt-3 w-56 bg-white border border-[#1B342B]/10 rounded-sm shadow-xl py-2 z-50">
                     {renderDropdownContent()}
@@ -277,16 +361,27 @@ export default function Navbar() {
               </Link>
             )}
 
-            <Link href="/book">
-              <button className="bg-[#1B342B] text-[#FDFBF7] px-5 py-1.5 rounded hover:bg-[#A67C52] transition-colors duration-300 font-medium">Book Now</button>
+            <Link href="/book" className="bg-[#1B342B] text-[#FDFBF7] px-5 py-1.5 rounded hover:bg-[#A67C52] transition-colors duration-300 font-medium inline-block text-center">
+              Book Now
             </Link>
           </div>
 
           <div className="flex-1 md:hidden flex justify-end space-x-4 text-[#1B342B] items-center">
+            
+            {/* REGION GROUPED MOBILE DROPDOWN */}
+            <select
+              value={currency}
+              onChange={handleCurrencyChange}
+              disabled={isCurrencyLoading}
+              className="bg-transparent text-[#1B342B] text-xs font-bold focus:outline-none cursor-pointer hover:text-[#A67C52] disabled:opacity-50"
+            >
+              {renderCurrencyOptions()}
+            </select>
+
             <button onClick={() => setIsCartOpen(true)} className="relative text-[#1B342B] hover:text-[#A67C52] transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" /></svg>
-              {cartItems.length > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">{cartItems.length}</span>
+              {cartCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center">{cartCount}</span>
               )}
             </button>
 
@@ -295,7 +390,6 @@ export default function Navbar() {
                  <div onClick={() => setMobileDropdownOpen(!mobileDropdownOpen)} className="w-7 h-7 rounded-full bg-[#1B342B] text-[#FDFBF7] flex items-center justify-center text-[10px] font-bold cursor-pointer">
                    {getInitial()}
                  </div>
-
                  {mobileDropdownOpen && (
                    <div className="absolute right-0 mt-3 w-56 bg-white border border-[#1B342B]/10 rounded-sm shadow-xl py-2 z-50">
                      {renderDropdownContent()}
@@ -311,7 +405,6 @@ export default function Navbar() {
         </div>
       </nav>
 
-      {/* --- INJECT THE ISOLATED CART COMPONENT HERE --- */}
       <CartDrawer 
         isOpen={isCartOpen}
         onClose={() => setIsCartOpen(false)}
@@ -324,21 +417,15 @@ export default function Navbar() {
         formatPrice={formatPrice}
       />
 
-      {/* --- MOBILE MENU --- */}
       {isOpen && (
         <div className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity duration-300" onClick={closeAllMenus}></div>
       )}
 
       <div className={`fixed top-0 left-0 h-full w-[80%] max-w-[320px] bg-[#FDFBF7] z-40 md:hidden transform transition-transform duration-300 ease-in-out shadow-2xl flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="bg-[#1B342B] px-6 py-5 flex justify-between items-center text-[#FDFBF7]">
-          <div>
-            <Image src="/LOGO/LOGO.png" alt="Gulab Mehndi" width={80} height={20} className="invert object-contain" />
-          </div>
-          <button onClick={closeAllMenus} className="p-1 focus:outline-none">
-            <svg className="w-6 h-6 text-[#FDFBF7]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-          </button>
+          <div><Image src="/LOGO/LOGO.png" alt="Gulab Mehndi" width={80} height={20} className="invert object-contain" /></div>
+          <button onClick={closeAllMenus} className="p-1 focus:outline-none"><svg className="w-6 h-6 text-[#FDFBF7]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
         </div>
-
         <div className="flex-1 overflow-y-auto py-2">
           <Link href="/" onClick={closeAllMenus} className="block px-6 py-4 border-b border-[#1B342B]/10 text-[#1B342B] font-medium hover:bg-[#F4F1ED]">Home</Link>
           <Link href="/shop" onClick={closeAllMenus} className="block px-6 py-4 border-b border-[#1B342B]/10 text-[#1B342B] font-medium hover:bg-[#F4F1ED]">Shop Boutique</Link>
@@ -347,13 +434,8 @@ export default function Navbar() {
           <Link href="/story" onClick={closeAllMenus} className="block px-6 py-4 border-b border-[#1B342B]/10 text-[#1B342B] font-medium hover:bg-[#F4F1ED]">Our Story</Link>
           <Link href="/reviews" onClick={closeAllMenus} className="block px-6 py-4 border-b border-[#1B342B]/10 text-[#1B342B] font-medium hover:bg-[#F4F1ED]">Reviews</Link>
         </div>
-
         <div className="p-6 border-t border-[#1B342B]/10 bg-[#F4F1ED]">
-          <Link href="/book" onClick={closeAllMenus}>
-            <button className="w-full bg-[#1B342B] text-[#FDFBF7] py-3 rounded hover:bg-[#A67C52] transition-colors duration-300 font-medium shadow-sm">
-              Book Appointment
-            </button>
-          </Link>
+          <Link href="/book" onClick={closeAllMenus} className="w-full bg-[#1B342B] text-[#FDFBF7] py-3 rounded hover:bg-[#A67C52] transition-colors duration-300 font-medium shadow-sm block text-center">Book Appointment</Link>
         </div>
       </div>
     </>
