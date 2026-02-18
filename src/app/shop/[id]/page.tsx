@@ -14,14 +14,14 @@ export default function ProductDetailsPage() {
   const [activeSection, setActiveSection] = useState('description'); 
   const [cartNotification, setCartNotification] = useState("");
 
-  // Enriched Mock Data
+  // Enriched Mock Data (Added "rating" property to fix TS error)
   const products = [
-    { id: 1, name: "Signature Bridal Cones", description: "Pack of 5 • Lavender & Eucalyptus", fullDescription: "Our signature blend used on international brides worldwide. Hand-mixed fresh with pure organic Rajasthani henna, therapeutic grade lavender, and eucalyptus essential oils. Achieves a deep, rich burgundy stain within 48 hours. The paste is incredibly stringy, allowing for the finest drape and intricate mandala work without breaking.", price: 25.00, originalPrice: 30.00, form: "Ready-to-use Cone", stainColor: "Deep Burgundy", images: ["/HEROBG/mobile/4.jpg", "/HEROBG/desktop/2.jpg", "/HEROBG/desktop/3.jpg"], inStock: true },
-    { id: 2, name: "Lemon-Sugar Sealant Spray", description: "Locks in moisture for the deepest stains", fullDescription: "The ultimate aftercare secret. This delicate mist prevents henna paste from flaking off too early, allowing the dye to penetrate deeper into the skin layers. Infused with pure rose water to calm the skin while the lemon oxidizes the henna.", price: 18.00, originalPrice: 18.00, form: "Liquid / Spray", stainColor: "Clear (Aftercare)", images: ["/HEROBG/desktop/2.jpg", "/HEROBG/desktop/3.jpg"], inStock: true },
-    { id: 3, name: "Triple-Sifted Rajasthani Powder", description: "100g • Pure Sojat henna leaves", fullDescription: "The finest, stringiest henna powder sourced directly from the farms of Sojat. Triple-sifted through silk screens to ensure absolute zero clogging in your fine-tip cones. This is the exact powder we use for our own bridal clients.", price: 15.00, originalPrice: 20.00, form: "Raw Powder", stainColor: "Natural Brown", images: ["/HEROBG/desktop/6.jpg", "/HEROBG/desktop/1.jpg"], inStock: true },
-    { id: 4, name: "Arabian Night Jagua Blend", description: "Pack of 3 • For intense dark tones", fullDescription: "A luxurious fusion of our organic henna and pure Jagua fruit juice from the Amazon. Yields a striking, midnight black stain entirely free of PPD or dangerous chemicals. Perfect for party guests and modern tribal designs.", price: 28.00, originalPrice: 28.00, form: "Ready-to-use Cone", stainColor: "Midnight Black", images: ["/HEROBG/mobile/2.jpg", "/HEROBG/desktop/4.jpg"], inStock: true },
-    { id: 5, name: "Bridal Crimson Paste", description: "Pre-mixed bowl • 200g for full bridal sets", fullDescription: "Perfect for busy artists. 200g of perfectly textured, stringy bridal paste delivered in a sealed piping bag. Just snip the tip and fill your own custom cones. Guaranteed perfect consistency every single time.", price: 45.00, originalPrice: 55.00, form: "Bulk Paste", stainColor: "Crimson Red", images: ["/HEROBG/desktop/1.jpg", "/HEROBG/desktop/2.jpg"], inStock: true },
-    { id: 6, name: "Therapeutic Essential Oil Blend", description: "30ml • Cajuput & Tea Tree mix", fullDescription: "Our highly guarded terpene blend. Add just a few drops to your henna paste to unlock the darkest, most enduring stain possible. 100% therapeutic grade, safe for sensitive skin.", price: 22.00, originalPrice: 25.00, form: "Liquid / Spray", stainColor: "Clear (Aftercare)", images: ["/HEROBG/desktop/3.jpg", "/HEROBG/desktop/4.jpg"], inStock: false }
+    { id: 1, name: "Signature Bridal Cones", description: "Pack of 5 • Lavender & Eucalyptus", fullDescription: "Our signature blend used on international brides worldwide. Hand-mixed fresh with pure organic Rajasthani henna, therapeutic grade lavender, and eucalyptus essential oils. Achieves a deep, rich burgundy stain within 48 hours. The paste is incredibly stringy, allowing for the finest drape and intricate mandala work without breaking.", price: 25.00, originalPrice: 30.00, form: "Ready-to-use Cone", stainColor: "Deep Burgundy", images: ["/HEROBG/mobile/4.jpg", "/HEROBG/desktop/2.jpg", "/HEROBG/desktop/3.jpg"], inStock: true, rating: 4.9 },
+    { id: 2, name: "Lemon-Sugar Sealant Spray", description: "Locks in moisture for the deepest stains", fullDescription: "The ultimate aftercare secret. This delicate mist prevents henna paste from flaking off too early, allowing the dye to penetrate deeper into the skin layers. Infused with pure rose water to calm the skin while the lemon oxidizes the henna.", price: 18.00, originalPrice: 18.00, form: "Liquid / Spray", stainColor: "Clear (Aftercare)", images: ["/HEROBG/desktop/2.jpg", "/HEROBG/desktop/3.jpg"], inStock: true, rating: 4.8 },
+    { id: 3, name: "Triple-Sifted Rajasthani Powder", description: "100g • Pure Sojat henna leaves", fullDescription: "The finest, stringiest henna powder sourced directly from the farms of Sojat. Triple-sifted through silk screens to ensure absolute zero clogging in your fine-tip cones. This is the exact powder we use for our own bridal clients.", price: 15.00, originalPrice: 20.00, form: "Raw Powder", stainColor: "Natural Brown", images: ["/HEROBG/desktop/6.jpg", "/HEROBG/desktop/1.jpg"], inStock: true, rating: 5.0 },
+    { id: 4, name: "Arabian Night Jagua Blend", description: "Pack of 3 • For intense dark tones", fullDescription: "A luxurious fusion of our organic henna and pure Jagua fruit juice from the Amazon. Yields a striking, midnight black stain entirely free of PPD or dangerous chemicals. Perfect for party guests and modern tribal designs.", price: 28.00, originalPrice: 28.00, form: "Ready-to-use Cone", stainColor: "Midnight Black", images: ["/HEROBG/mobile/2.jpg", "/HEROBG/desktop/4.jpg"], inStock: true, rating: 4.7 },
+    { id: 5, name: "Bridal Crimson Paste", description: "Pre-mixed bowl • 200g for full bridal sets", fullDescription: "Perfect for busy artists. 200g of perfectly textured, stringy bridal paste delivered in a sealed piping bag. Just snip the tip and fill your own custom cones. Guaranteed perfect consistency every single time.", price: 45.00, originalPrice: 55.00, form: "Bulk Paste", stainColor: "Crimson Red", images: ["/HEROBG/desktop/1.jpg", "/HEROBG/desktop/2.jpg"], inStock: true, rating: 4.9 },
+    { id: 6, name: "Therapeutic Essential Oil Blend", description: "30ml • Cajuput & Tea Tree mix", fullDescription: "Our highly guarded terpene blend. Add just a few drops to your henna paste to unlock the darkest, most enduring stain possible. 100% therapeutic grade, safe for sensitive skin.", price: 22.00, originalPrice: 25.00, form: "Liquid / Spray", stainColor: "Clear (Aftercare)", images: ["/HEROBG/desktop/3.jpg", "/HEROBG/desktop/4.jpg"], inStock: false, rating: 4.8 }
   ];
 
   const product = products.find(p => p.id === id);
@@ -97,7 +97,7 @@ export default function ProductDetailsPage() {
           {/* RIGHT: ESSENTIAL PURCHASE DETAILS */}
           <div className="w-full lg:w-1/2 flex flex-col justify-start pt-0">
             
-           
+            
 
             <h1 className="text-4xl lg:text-5xl font-serif text-[#1B342B] tracking-tight mb-4 leading-tight">
               {product.name}
@@ -253,8 +253,9 @@ export default function ProductDetailsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
             {recommendations.map((rec) => (
               <Link href={`/shop/${rec.id}`} key={rec.id} className="flex flex-col group cursor-pointer">
+                {/* FIX: Changed rec.image to rec.images[0] */}
                 <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#1B342B]/5 mb-5 shadow-sm group-hover:shadow-xl transition-all duration-500">
-                  <Image src={rec.image} alt={rec.name} fill className="object-cover transition-transform duration-700 group-hover:scale-105" />
+                  <Image src={rec.images[0]} alt={rec.name} fill className="object-cover transition-transform duration-700 group-hover:scale-105" />
                   {!rec.inStock && (
                     <div className="absolute top-4 left-4 z-10">
                       <span className="bg-[#1B342B]/80 text-[#FDFBF7] px-3 py-1 text-[9px] uppercase tracking-widest font-bold shadow-sm">Sold Out</span>
