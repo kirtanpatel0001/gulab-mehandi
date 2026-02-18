@@ -2,18 +2,25 @@ import { NextResponse } from 'next/server';
 import Razorpay from 'razorpay';
 import { createClient } from '@supabase/supabase-js';
 
-const razorpay = new Razorpay({
-  key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
 export async function POST(req: Request) {
   try {
+    // --- FIX: Initialize SDKs INSIDE the handler so Vercel doesn't crash during build! ---
+    if (!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      console.error("CRITICAL: Razorpay environment variables are missing.");
+      return NextResponse.json({ error: "Server configuration error." }, { status: 500 });
+    }
+
+    const razorpay = new Razorpay({
+      key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+    // ------------------------------------------------------------------------------------
+
     const body = await req.json();
     const { userId, addressId, customerName, currency = 'INR' } = body;
 
@@ -31,7 +38,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Your cart is empty or invalid." }, { status: 400 });
     }
 
-    // 2. SERVER-SIDE MATH (FIXED: Added ': any' to bypass strict Vercel type checking)
+    // 2. SERVER-SIDE MATH
     const totalAmount = cartItems.reduce((total: number, item: any) => {
       const price = Array.isArray(item.product) ? item.product[0].price : item.product.price;
       return total + (price * item.quantity);
