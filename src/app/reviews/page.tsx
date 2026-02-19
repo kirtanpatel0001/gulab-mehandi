@@ -22,7 +22,7 @@ type CachedReviews = {
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
 const fetchWithTimeout = async (
-  queryPromise: Promise<any>,
+  queryFn: () => Promise<any>,
   timeout = 10000
 ) => {
   let timeoutId: NodeJS.Timeout;
@@ -34,7 +34,7 @@ const fetchWithTimeout = async (
   });
 
   const result = await Promise.race([
-    queryPromise,
+    queryFn(),
     timeoutPromise
   ]);
 
@@ -90,7 +90,7 @@ export default function ReviewsPage() {
     setError(null);
 
     try {
-      const result = await fetchWithTimeout(
+      const result = await fetchWithTimeout(async () =>
         supabase
           .from("reviews")
           .select("*")
