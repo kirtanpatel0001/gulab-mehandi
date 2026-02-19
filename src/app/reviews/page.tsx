@@ -21,13 +21,36 @@ type CachedReviews = {
 
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
+const fetchWithTimeout = async (
+  queryPromise: Promise<any>,
+  timeout = 10000
+) => {
+  let timeoutId: NodeJS.Timeout;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error("Supabase query timeout"));
+    }, timeout);
+  });
+
+  const result = await Promise.race([
+    queryPromise,
+    timeoutPromise
+  ]);
+
+  clearTimeout(timeoutId!);
+
+  return result;
+};
+
 export default function ReviewsPage() {
-  // --- FIX: Replaced global variable with component-scoped useRef ---
   const cacheRef = useRef<CachedReviews | null>(null);
+  const isMounted = useRef(false);
+  const fetchingRef = useRef(false);
   
-  // Initialize with empty/loading state since ref is empty on first mount
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,61 +58,117 @@ export default function ReviewsPage() {
   const [imageFile, setImageFile] = useState<File | null>(null);
 
   useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     document.body.style.overflow = isModalOpen ? 'hidden' : 'auto';
     return () => { document.body.style.overflow = 'auto'; };
   }, [isModalOpen]);
 
-  // --- FIX: Safely check cacheRef and update state without infinite loops ---
   const fetchReviews = useCallback(async (force = false) => {
-    const cache = cacheRef.current;
-    const isValid = cache && Date.now() - cache.timestamp < CACHE_TTL;
+    if (fetchingRef.current) return;
 
-    if (isValid && !force) {
+    const cache = cacheRef.current;
+
+    if (
+      cache &&
+      Date.now() - cache.timestamp < CACHE_TTL &&
+      !force
+    ) {
       setReviews(cache.data);
       setLoading(false);
       return;
     }
 
+    fetchingRef.current = true;
+
     setLoading(true);
+    setError(null);
 
     try {
-      const { data, error } = await supabase
-        .from('reviews')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(30);
+      const result = await fetchWithTimeout(
+        supabase
+          .from("reviews")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(30)
+      );
 
-      if (error) {
-        console.error("Error fetching reviews:", error);
-        throw error;
-      }
+      const { data, error } = result;
 
-      // Update cache safely
+      if (!isMounted.current) return;
+
+      if (error) throw error;
+
+      const safeData = data ?? [];
+
       cacheRef.current = {
-        data: data || [],
-        timestamp: Date.now()
+        data: safeData,
+        timestamp: Date.now(),
       };
-      
-      setReviews(data || []);
+
+      setReviews(safeData);
+
     } catch (err) {
-      console.error("Unexpected fetch error:", err);
+      if (!isMounted.current) return;
+
+      console.error(err);
+
+      setError("Failed to load reviews");
+      setReviews([]);
+
     } finally {
-      setLoading(false); 
+      if (isMounted.current) {
+        setLoading(false);
+        fetchingRef.current = false;
+      }
     }
-  }, []); 
+  }, []);
 
   useEffect(() => {
     fetchReviews();
+  }, [fetchReviews]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("reviews-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "reviews",
+        },
+        () => {
+          fetchReviews(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
   }, [fetchReviews]);
 
   const handleSubmitReview = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
 
-    if (imageFile && imageFile.size > 5 * 1024 * 1024) {
-      alert("Image must be under 5MB.");
-      setIsSubmitting(false);
-      return;
+    if (imageFile) {
+      if (!imageFile.type.startsWith("image/")) {
+        alert("Invalid file type. Please upload an image.");
+        setIsSubmitting(false);
+        return;
+      }
+      if (imageFile.size > 5 * 1024 * 1024) {
+        alert("Image must be under 5MB.");
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     const formData = new FormData(e.currentTarget);
@@ -108,6 +187,11 @@ export default function ReviewsPage() {
         });
         
         const data = await res.json();
+        
+        if (!res.ok || !data.secure_url) {
+          throw new Error("Cloudinary upload failed");
+        }
+        
         uploadedImageUrl = data.secure_url; 
       } catch (error) {
         console.error("Cloudinary upload failed:", error);
@@ -119,7 +203,7 @@ export default function ReviewsPage() {
 
     const safeRating = Math.min(5, Math.max(1, rating));
 
-    const { error } = await supabase.from('reviews').insert([{
+    const { error: insertError } = await supabase.from('reviews').insert([{
       name: formData.get('name'),
       location: formData.get('location'),
       quote: formData.get('quote'),
@@ -127,14 +211,14 @@ export default function ReviewsPage() {
       image_url: uploadedImageUrl,
     }]);
 
-    if (error) {
-      console.error("Supabase insert failed:", error);
+    if (insertError) {
+      console.error("Supabase insert failed:", insertError);
       alert("Something went wrong saving the review.");
     } else {
       setIsModalOpen(false);
       setImageFile(null);
       setRating(5);
-      fetchReviews(true); // Force bypasses cache after a new review
+      fetchReviews(true); 
     }
     
     setIsSubmitting(false);
@@ -144,7 +228,6 @@ export default function ReviewsPage() {
 
   return (
     <section className="min-h-screen bg-[#FDFBF7] w-full pb-24 relative">
-      
       <div className="max-w-5xl mx-auto px-6 pt-24 pb-16 text-center">
         <span className="text-[#A67C52] tracking-[0.3em] text-xs font-semibold uppercase mb-4 block">
           Client Diaries
@@ -171,6 +254,10 @@ export default function ReviewsPage() {
               <div className="w-8 h-8 border-2 border-[#1B342B]/20 border-t-[#A67C52] rounded-full animate-spin"></div>
               <p className="text-[#1B342B]/50 text-xs uppercase tracking-[0.2em] font-semibold animate-pulse">Curating Stories...</p>
             </div>
+          </div>
+        ) : error ? (
+          <div className="text-center py-20 border border-red-200 bg-red-50 shadow-sm">
+            <p className="text-red-600 font-serif text-lg">{error}</p>
           </div>
         ) : reviews.length === 0 ? (
           <div className="text-center py-20 border border-[#1B342B]/10 bg-white shadow-sm">
@@ -222,7 +309,6 @@ export default function ReviewsPage() {
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm transition-opacity">
           <div className="bg-[#FDFBF7] w-full max-w-2xl rounded-sm p-8 md:p-12 relative max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl">
-            
             <button 
               onClick={() => setIsModalOpen(false)}
               className="absolute top-6 right-6 text-[#1B342B]/50 hover:text-[#1B342B] transition-transform hover:rotate-90 duration-300"
@@ -236,7 +322,6 @@ export default function ReviewsPage() {
             </div>
 
             <form onSubmit={handleSubmitReview} className="flex flex-col space-y-6">
-              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="flex flex-col space-y-2">
                   <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Full Name</label>

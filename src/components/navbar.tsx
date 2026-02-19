@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
-import type { User } from '@supabase/supabase-js';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
-
-import CartDrawer from '@/components/CartDrawer'; 
+import CartDrawer from '@/components/CartDrawer';
+import { useAuth } from "@/components/AuthProvider";
+import type { User } from '@supabase/supabase-js';
 
 export type CartItem = {
   id: string;
@@ -22,7 +22,6 @@ export type CartItem = {
   } | null;
 };
 
-// --- CURRENCY REGIONS ---
 const CURRENCY_REGIONS = {
   "North America": ["USD", "CAD"],
   "Middle East": ["AED", "SAR", "QAR"],
@@ -38,30 +37,25 @@ export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
   
-  // --- UI STATES ---
+  const { user, role: userRole, signOut } = useAuth(); 
+
   const [isOpen, setIsOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [desktopDropdownOpen, setDesktopDropdownOpen] = useState(false);
   const [mobileDropdownOpen, setMobileDropdownOpen] = useState(false);
-  
-  // --- DATA STATES ---
-  const [user, setUser] = useState<User | null>(null);
-  const [userRole, setUserRole] = useState<string | null>(null);
+
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [isCartLoading, setIsCartLoading] = useState(false);
 
-  // --- CURRENCY STATES ---
   const [currency, setCurrency] = useState('USD');
   const [exchangeRate, setExchangeRate] = useState(1);
   const [allRates, setAllRates] = useState<Record<string, number>>({});
   const [isCurrencyLoading, setIsCurrencyLoading] = useState(true);
 
-  // --- REFS ---
   const desktopDropdownRef = useRef<HTMLDivElement>(null);
   const mobileDropdownRef = useRef<HTMLDivElement>(null);
   const cartFetchId = useRef(0);
 
-  // --- UTILS ---
   const closeAllMenus = useCallback(() => {
     setIsOpen(false);
     setDesktopDropdownOpen(false);
@@ -164,17 +158,16 @@ export default function Navbar() {
     }).format(convertedPrice);
   }, [currency, exchangeRate]);
 
-  // --- SUPABASE DATA FETCHING ---
   const fetchCartData = useCallback(async (sessionUser: User | null) => {
     if (!sessionUser) {
       setCartItems([]);
-      setIsCartLoading(false); 
+      setIsCartLoading(false);
       return;
     }
-    
+
     const fetchId = ++cartFetchId.current;
     setIsCartLoading(true);
-    
+
     try {
       const { data, error } = await supabase
         .from('cart_items')
@@ -182,7 +175,7 @@ export default function Navbar() {
           id, quantity,
           product:products ( id, name, price, image_url, stain_color, weight_volume )
         `)
-        .eq('user_id', sessionUser.id) 
+        .eq('user_id', sessionUser.id)
         .order('created_at', { ascending: true });
 
       if (fetchId !== cartFetchId.current) return;
@@ -190,7 +183,7 @@ export default function Navbar() {
       if (error) {
         console.error("Supabase Cart Error:", error.message);
       } else if (data) {
-       setCartItems(data as unknown as CartItem[]);
+        setCartItems(data as unknown as CartItem[]);
       }
     } catch (err) {
       if (fetchId === cartFetchId.current) console.error("Unexpected error fetching cart:", err);
@@ -199,35 +192,14 @@ export default function Navbar() {
     }
   }, []);
 
-  const fetchUserAndRole = useCallback(async (sessionUser: User | null) => {
-    setUser(sessionUser);
-    
-    if (sessionUser) {
-      try {
-        const { data, error } = await supabase.from('profiles').select('role').eq('id', sessionUser.id).maybeSingle(); 
-        setUserRole(data?.role || 'user');
-      } catch (err) {
-        setUserRole('user');
-      }
-      fetchCartData(sessionUser); 
-    } else {
-      setUserRole(null);
-      setCartItems([]);
-      setIsCartLoading(false); 
-    }
-  }, [fetchCartData]);
-
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => 
-      fetchUserAndRole(data.session?.user ?? null)
-    );
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => fetchUserAndRole(session?.user ?? null)
-    );
-
-    return () => authListener.subscription.unsubscribe();
-  }, [fetchUserAndRole]);
+    if (!user) {
+      setCartItems([]);
+      setIsCartLoading(false);
+      return;
+    }
+    fetchCartData(user);
+  }, [user, fetchCartData]);
 
   useEffect(() => {
     const handleCartUpdate = () => { if (user) fetchCartData(user); };
@@ -240,37 +212,35 @@ export default function Navbar() {
     fetchCartData(user);
   }, [isCartOpen, user, cartItems.length, fetchCartData]);
 
-  // --- CART MATH & ACTIONS ---
   const cartCount = useMemo(() => cartItems.reduce((sum, item) => sum + item.quantity, 0), [cartItems]);
   const cartSubtotalUSD = useMemo(() => cartItems.reduce((total, item) => total + ((item.product?.price || 0) * item.quantity), 0), [cartItems]);
 
   const updateQuantity = useCallback(async (cartId: string, currentQuantity: number, change: number) => {
     const newQuantity = currentQuantity + change;
-    if (newQuantity < 1) return; 
+    if (newQuantity < 1) return;
 
     setCartItems(prev => prev.map(item => item.id === cartId ? { ...item, quantity: newQuantity } : item));
     const { error } = await supabase.from('cart_items').update({ quantity: newQuantity }).eq('id', cartId);
-    
+
     if (error) {
       setCartItems(prev => prev.map(item => item.id === cartId ? { ...item, quantity: currentQuantity } : item));
     }
   }, []);
 
   const removeItem = useCallback(async (cartId: string) => {
-    let snapshot: CartItem[] = []; 
+    let snapshot: CartItem[] = [];
     setCartItems(prev => {
       snapshot = prev;
       return prev.filter(item => item.id !== cartId);
     });
-    
+
     const { error } = await supabase.from('cart_items').delete().eq('id', cartId);
-    if (error) setCartItems(snapshot); 
+    if (error) setCartItems(snapshot);
   }, []);
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await signOut();
     closeAllMenus();
-    router.replace('/login');
   };
 
   const getInitial = () => {
@@ -279,7 +249,7 @@ export default function Navbar() {
     return "U";
   };
 
-  if (pathname.startsWith('/admin')) return null; 
+  if (pathname.startsWith('/admin')) return null;
 
   const renderDropdownContent = () => (
     <>
@@ -310,7 +280,7 @@ export default function Navbar() {
     <>
       <nav className="w-full bg-[#FDFBF7] px-4 md:px-8 py-2 sticky top-0 z-40 border-b border-[#1B342B]/10">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          
+
           <div className="flex-1 md:hidden">
             <button onClick={() => setIsOpen(true)} className="text-[#1B342B] focus:outline-none flex items-center">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
@@ -333,7 +303,7 @@ export default function Navbar() {
           </div>
 
           <div className="hidden md:flex items-center space-x-5 lg:space-x-6">
-            
+
             <select
               value={currency}
               onChange={handleCurrencyChange}
@@ -349,7 +319,7 @@ export default function Navbar() {
                 <span className="absolute -top-1.5 -right-1.5 bg-[#A67C52] text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-fade-in">{cartCount}</span>
               )}
             </button>
-            
+
             {user ? (
               <div className="relative" ref={desktopDropdownRef}>
                 <div onClick={() => setDesktopDropdownOpen(!desktopDropdownOpen)} className="w-8 h-8 rounded-full bg-[#1B342B] text-[#FDFBF7] flex items-center justify-center text-xs font-bold hover:bg-[#A67C52] transition-colors shadow-sm cursor-pointer select-none">
@@ -373,7 +343,7 @@ export default function Navbar() {
           </div>
 
           <div className="flex-1 md:hidden flex justify-end space-x-4 text-[#1B342B] items-center">
-            
+
             <select
               value={currency}
               onChange={handleCurrencyChange}
@@ -410,7 +380,7 @@ export default function Navbar() {
         </div>
       </nav>
 
-      <CartDrawer 
+      <CartDrawer
         isOpen={isCartOpen}
         onClose={() => setIsCartOpen(false)}
         user={user}
