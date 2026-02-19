@@ -1,8 +1,15 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  ReactNode,
+} from "react";
 import { supabase } from "@/lib/supabase";
-import type { User, Session } from "@supabase/supabase-js";
+import type { User, Session, AuthChangeEvent } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 
 type AuthContextType = {
@@ -40,7 +47,6 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         .select("role")
         .eq("id", userId)
         .maybeSingle();
-
       setRole(data?.role ?? "user");
     } catch {
       setRole("user");
@@ -49,8 +55,10 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = useCallback(async () => {
     setLoading(true);
-
-    const { data: { session }, error } = await supabase.auth.getSession();
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
 
     if (error || !session) {
       setUser(null);
@@ -68,22 +76,35 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+
+    // Initial session load
     refreshUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, session: Session | null) => {
       if (!mounted) return;
 
-      if (!session) {
+      if (!session || event === "SIGNED_OUT") {
         setUser(null);
         setSession(null);
         setRole(null);
+        setLoading(false);
+        // ✅ Only navigate on explicit sign out, not on every state change
+        if (event === "SIGNED_OUT") {
+          router.replace("/login");
+        }
       } else {
         setUser(session.user);
         setSession(session);
         await fetchRole(session.user.id);
+        setLoading(false);
+        // ✅ Only navigate on fresh sign in (OAuth callback, OTP verify, etc.)
+        if (event === "SIGNED_IN") {
+          // Let the LoginPage or individual pages handle their own routing
+          // Do NOT call router.refresh() — it remounts components and kills dropdown state
+        }
       }
-
-      router.refresh();
     });
 
     return () => {
@@ -94,15 +115,13 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    setUser(null);
-    setSession(null);
-    setRole(null);
-    router.replace("/login");
-    router.refresh();
+    // onAuthStateChange will handle the redirect above
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, role, loading, signOut, refreshUser }}>
+    <AuthContext.Provider
+      value={{ user, session, role, loading, signOut, refreshUser }}
+    >
       {children}
     </AuthContext.Provider>
   );

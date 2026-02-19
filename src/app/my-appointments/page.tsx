@@ -13,44 +13,63 @@ export default function MyAppointmentsPage() {
   const [selectedAppt, setSelectedAppt] = useState<any | null>(null); 
   const [isInviteOpen, setIsInviteOpen] = useState(false); // Controls the 3D doors
 
-  useEffect(() => {
-    const fetchMyAppointments = async () => {
-      setLoading(true);
-      
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/login');
-        return;
-      }
+useEffect(() => {
 
-      const { data, error } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('email', session.user.email)
-        .order('created_at', { ascending: false });
+  let isMounted = true;
 
-      if (!error && data) {
-        setAppointments(data);
-      }
-      
-      // Inject Fake Appointment if empty so you can test the UI!
-      if (!data || data.length === 0) {
-        setAppointments([{
-          id: 'APT-7729-VIP',
-          service_type: 'Bridal Henna (Hands & Feet)',
+  const fetchMyAppointments = async () => {
+
+    setLoading(true);
+
+    const { data: { session } } =
+      await supabase.auth.getSession();
+
+    if (!session?.user) {
+      router.replace("/login");
+      return;
+    }
+
+    const { data, error } =
+      await supabase
+        .from("bookings")
+        .select("*")
+        .eq("user_id", session.user.id)   // FIXED HERE
+        .order("created_at", { ascending: false });
+
+    if (!isMounted) return;
+
+    if (!error && data) {
+      setAppointments(data);
+    }
+
+    if (!data || data.length === 0) {
+
+      setAppointments([
+        {
+          id: "APT-DEMO",
+          service_type: "Bridal Henna Consultation",
           created_at: new Date().toISOString(),
-          status: 'Confirmed',
-          phone: session.user.user_metadata?.phone_number || '+91 0000 00000',
+          status: "Pending",
+          phone: session.user.user_metadata?.phone_number,
           email: session.user.email,
-          name: session.user.user_metadata?.full_name || 'Honored Guest'
-        }]);
-      }
-      
-      setLoading(false);
-    };
+          name: session.user.user_metadata?.full_name,
+        },
+      ]);
 
-    fetchMyAppointments();
-  }, [router]);
+    }
+
+    setLoading(false);
+
+  };
+
+  fetchMyAppointments();
+
+  return () => {
+    isMounted = false;
+  };
+
+}, []);
+
 
   // --- TRIGGER INVITATION ANIMATION ---
   const handleOpenAppt = (appt: any) => {

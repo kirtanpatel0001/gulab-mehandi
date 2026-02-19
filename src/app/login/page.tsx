@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -8,10 +8,9 @@ import Image from 'next/image';
 
 export default function LoginPage() {
   const router = useRouter();
-  
+
   const [view, setView] = useState<'LOGIN' | 'SIGNUP' | 'VERIFY'>('LOGIN');
-  
-  // Form State
+
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
@@ -20,25 +19,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // --- FIX 2: STRICT MODE GUARD ---
-  const authHandled = useRef(false);
+  // ✅ REMOVED: The useEffect that called routeUser() on mount.
+  // AuthProvider's onAuthStateChange handles all session-aware redirects now.
+  // Having both caused a race condition where two router.push() calls competed.
 
-  useEffect(() => {
-    if (authHandled.current) return;
-    authHandled.current = true;
-
-    const handleAuthRedirect = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        await routeUser(session.user.id);
-      }
-    };
-    handleAuthRedirect();
-  }, []);
-
-  // --- FIX 1: BULLETPROOF ROUTING LOGIC ---
   const routeUser = async (userId: string) => {
-    // maybeSingle() prevents crashes if the row doesn't exist yet
     const { data: profile, error } = await supabase
       .from('profiles')
       .select('role, phone_number')
@@ -49,7 +34,6 @@ export default function LoginPage() {
       console.error("Profile fetch error:", error.message);
     }
 
-    // If there is no profile yet, or no phone number, force them to complete it
     if (!profile || !profile.phone_number) {
       router.push('/complete-profile');
       return;
@@ -60,7 +44,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push('/'); 
+    router.push('/');
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -68,13 +52,13 @@ export default function LoginPage() {
     setLoading(true);
     setErrorMsg("");
 
-    const { error } = await supabase.auth.signUp({ 
-      email, 
+    const { error } = await supabase.auth.signUp({
+      email,
       password,
       options: {
         data: {
           full_name: name,
-          phone_number: phone, 
+          phone_number: phone,
         }
       }
     });
@@ -82,9 +66,9 @@ export default function LoginPage() {
     if (error) {
       setErrorMsg(error.message);
     } else {
-      setView('VERIFY'); 
+      setView('VERIFY');
     }
-    
+
     setLoading(false);
   };
 
@@ -102,9 +86,10 @@ export default function LoginPage() {
     if (error) {
       setErrorMsg("Invalid code. Please check your email and try again.");
     } else if (data.session) {
+      // ✅ routeUser handles profile-based routing after OTP verify
       await routeUser(data.session.user.id);
     }
-    
+
     setLoading(false);
   };
 
@@ -118,20 +103,21 @@ export default function LoginPage() {
     if (error) {
       setErrorMsg("Invalid email or password.");
     } else if (data.session) {
+      // ✅ routeUser handles profile-based routing after login
       await routeUser(data.session.user.id);
     }
-    
+
     setLoading(false);
   };
 
   const handleOAuthLogin = async () => {
     setLoading(true);
     setErrorMsg("");
-    
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/login`, 
+        redirectTo: `${window.location.origin}/auth/callback`, // ✅ Use a dedicated callback route, not /login
       }
     });
 
@@ -143,13 +129,11 @@ export default function LoginPage() {
 
   return (
     <section className="min-h-screen bg-[#FDFBF7] flex flex-col justify-center items-center px-6 relative py-20">
-      
-      {/* Background Decor */}
+
       <div className="absolute top-0 left-0 w-full h-1/3 bg-[#1B342B] -z-10"></div>
 
       <div className="w-full max-w-md bg-white border border-[#1B342B]/10 rounded-sm shadow-2xl p-8 md:p-10">
-        
-        {/* Header */}
+
         <div className="flex flex-col items-center mb-8">
           <Link href="/">
             <Image src="/LOGO/LOGO.png" alt="Gulab Mehndi" width={100} height={30} className="mb-6 object-contain" />
@@ -164,19 +148,16 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* Error Message */}
         {errorMsg && (
           <div className="mb-6 p-3 bg-red-50 border border-red-200 text-red-600 text-xs text-center rounded-sm">
             {errorMsg}
           </div>
         )}
 
-        {/* --- VIEW: LOGIN OR SIGNUP --- */}
         {(view === 'LOGIN' || view === 'SIGNUP') && (
           <>
-            {/* GOOGLE LOGIN */}
             <div className="mb-6">
-              <button 
+              <button
                 onClick={handleOAuthLogin}
                 disabled={loading}
                 className="w-full flex items-center justify-center space-x-3 bg-white border border-[#1B342B]/20 text-[#1B342B] py-3.5 rounded-sm hover:bg-[#1B342B]/5 transition-colors duration-300 shadow-sm disabled:opacity-50"
@@ -197,31 +178,30 @@ export default function LoginPage() {
               <div className="flex-1 h-px bg-[#1B342B]/10"></div>
             </div>
 
-            {/* EMAIL FORM */}
             <form onSubmit={view === 'LOGIN' ? handleLogin : handleSignUp} className="flex flex-col space-y-4">
-              
+
               {view === 'SIGNUP' && (
                 <>
                   <div className="flex flex-col space-y-1.5">
                     <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Full Name</label>
-                    <input 
-                      type="text" 
-                      required 
-                      value={name} 
-                      onChange={(e) => setName(e.target.value)} 
-                      placeholder="e.g. Jane Doe" 
-                      className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none" 
+                    <input
+                      type="text"
+                      required
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="e.g. Jane Doe"
+                      className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none"
                     />
                   </div>
                   <div className="flex flex-col space-y-1.5">
                     <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Phone Number</label>
-                    <input 
-                      type="tel" 
-                      required 
-                      value={phone} 
-                      onChange={(e) => setPhone(e.target.value)} 
-                      placeholder="+91 00000 00000" 
-                      className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none" 
+                    <input
+                      type="tel"
+                      required
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+91 00000 00000"
+                      className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none"
                     />
                   </div>
                 </>
@@ -229,30 +209,30 @@ export default function LoginPage() {
 
               <div className="flex flex-col space-y-1.5">
                 <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Email Address</label>
-                <input 
-                  type="email" 
-                  required 
-                  value={email} 
-                  onChange={(e) => setEmail(e.target.value)} 
-                  className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none" 
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none"
                 />
               </div>
 
               <div className="flex flex-col space-y-1.5">
                 <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Password</label>
-                <input 
-                  type="password" 
-                  required 
-                  minLength={6} 
-                  value={password} 
-                  onChange={(e) => setPassword(e.target.value)} 
-                  className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none" 
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="border border-[#1B342B]/15 p-3 focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] text-sm rounded-sm outline-none"
                 />
               </div>
 
-              <button 
-                type="submit" 
-                disabled={loading} 
+              <button
+                type="submit"
+                disabled={loading}
                 className="w-full bg-[#1B342B] text-[#FDFBF7] py-4 mt-2 rounded-sm hover:bg-[#A67C52] transition-colors duration-500 uppercase text-xs tracking-[0.2em] font-bold disabled:opacity-50 shadow-md"
               >
                 {loading ? 'Processing...' : (view === 'LOGIN' ? 'Login' : 'Create Account')}
@@ -261,24 +241,23 @@ export default function LoginPage() {
           </>
         )}
 
-        {/* --- VIEW: VERIFY 6-DIGIT OTP --- */}
         {view === 'VERIFY' && (
           <form onSubmit={handleVerifyOtp} className="flex flex-col space-y-5">
             <div className="flex flex-col space-y-2">
               <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80 text-center">Enter 6-Digit Code</label>
-              <input 
-                type="text" 
-                required 
-                maxLength={6} 
-                value={otp} 
-                onChange={(e) => setOtp(e.target.value)} 
-                placeholder="• • • • • •" 
-                className="border border-[#1B342B]/15 p-4 text-center text-2xl tracking-[0.5em] focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] rounded-sm outline-none font-mono" 
+              <input
+                type="text"
+                required
+                maxLength={6}
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+                placeholder="• • • • • •"
+                className="border border-[#1B342B]/15 p-4 text-center text-2xl tracking-[0.5em] focus:ring-1 focus:ring-[#A67C52] focus:border-[#A67C52] bg-white text-[#1B342B] rounded-sm outline-none font-mono"
               />
             </div>
-            <button 
-              type="submit" 
-              disabled={loading} 
+            <button
+              type="submit"
+              disabled={loading}
               className="w-full bg-[#A67C52] text-[#FDFBF7] py-4 mt-4 rounded-sm hover:bg-[#1B342B] transition-colors duration-500 uppercase text-xs tracking-[0.2em] font-bold disabled:opacity-50 shadow-md"
             >
               {loading ? 'Verifying...' : 'Verify & Enter'}
@@ -286,13 +265,12 @@ export default function LoginPage() {
           </form>
         )}
 
-        {/* Toggle between Login and Signup */}
         {view !== 'VERIFY' && (
           <div className="mt-8 text-center border-t border-[#1B342B]/10 pt-6">
             <p className="text-[#1B342B]/70 text-xs">
               {view === 'LOGIN' ? "New client?" : "Already verified?"}
-              <button 
-                onClick={() => setView(view === 'LOGIN' ? 'SIGNUP' : 'LOGIN')} 
+              <button
+                onClick={() => setView(view === 'LOGIN' ? 'SIGNUP' : 'LOGIN')}
                 className="ml-2 text-[#A67C52] font-bold uppercase tracking-widest hover:text-[#1B342B] transition-colors"
               >
                 {view === 'LOGIN' ? 'Sign Up' : 'Login'}

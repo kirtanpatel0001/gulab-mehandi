@@ -21,37 +21,15 @@ type CachedReviews = {
 
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
-const fetchWithTimeout = async (
-  queryFn: () => Promise<any>,
-  timeout = 10000
-) => {
-  let timeoutId: NodeJS.Timeout;
-
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error("Supabase query timeout"));
-    }, timeout);
-  });
-
-  const result = await Promise.race([
-    queryFn(),
-    timeoutPromise
-  ]);
-
-  clearTimeout(timeoutId!);
-
-  return result;
-};
-
 export default function ReviewsPage() {
   const cacheRef = useRef<CachedReviews | null>(null);
   const isMounted = useRef(false);
   const fetchingRef = useRef(false);
-  
+
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [rating, setRating] = useState(5);
@@ -59,9 +37,7 @@ export default function ReviewsPage() {
 
   useEffect(() => {
     isMounted.current = true;
-    return () => {
-      isMounted.current = false;
-    };
+    return () => { isMounted.current = false; };
   }, []);
 
   useEffect(() => {
@@ -73,54 +49,39 @@ export default function ReviewsPage() {
     if (fetchingRef.current) return;
 
     const cache = cacheRef.current;
-
-    if (
-      cache &&
-      Date.now() - cache.timestamp < CACHE_TTL &&
-      !force
-    ) {
+    if (cache && Date.now() - cache.timestamp < CACHE_TTL && !force) {
       setReviews(cache.data);
       setLoading(false);
       return;
     }
 
     fetchingRef.current = true;
-
     setLoading(true);
     setError(null);
 
     try {
-      const result = await fetchWithTimeout(async () =>
-        supabase
-          .from("reviews")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(30)
-      );
-
-      const { data, error } = result;
+      // ✅ FIXED: actually await the Supabase query directly
+      // The old fetchWithTimeout wrapper was NOT awaiting the query inside queryFn,
+      // so Promise.race resolved with the query builder object (not the data),
+      // causing { data, error } to both be undefined — infinite loading.
+      const { data, error: queryError } = await supabase
+        .from('reviews')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(30);
 
       if (!isMounted.current) return;
+      if (queryError) throw queryError;
 
-      if (error) throw error;
-
-      const safeData = data ?? [];
-
-      cacheRef.current = {
-        data: safeData,
-        timestamp: Date.now(),
-      };
-
+      const safeData = (data as Review[]) ?? [];
+      cacheRef.current = { data: safeData, timestamp: Date.now() };
       setReviews(safeData);
 
     } catch (err) {
       if (!isMounted.current) return;
-
-      console.error(err);
-
-      setError("Failed to load reviews");
+      console.error('Reviews fetch error:', err);
+      setError('Failed to load reviews');
       setReviews([]);
-
     } finally {
       if (isMounted.current) {
         setLoading(false);
@@ -133,25 +94,16 @@ export default function ReviewsPage() {
     fetchReviews();
   }, [fetchReviews]);
 
+  // Realtime: refetch when a new review is inserted
   useEffect(() => {
     const channel = supabase
-      .channel("reviews-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "reviews",
-        },
-        () => {
-          fetchReviews(true);
-        }
-      )
+      .channel('reviews-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reviews' }, () => {
+        fetchReviews(true);
+      })
       .subscribe();
 
-    return () => {
-      channel.unsubscribe();
-    };
+    return () => { channel.unsubscribe(); };
   }, [fetchReviews]);
 
   const handleSubmitReview = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -159,13 +111,13 @@ export default function ReviewsPage() {
     setIsSubmitting(true);
 
     if (imageFile) {
-      if (!imageFile.type.startsWith("image/")) {
-        alert("Invalid file type. Please upload an image.");
+      if (!imageFile.type.startsWith('image/')) {
+        alert('Invalid file type. Please upload an image.');
         setIsSubmitting(false);
         return;
       }
       if (imageFile.size > 5 * 1024 * 1024) {
-        alert("Image must be under 5MB.");
+        alert('Image must be under 5MB.');
         setIsSubmitting(false);
         return;
       }
@@ -185,17 +137,14 @@ export default function ReviewsPage() {
           method: 'POST',
           body: cloudinaryData,
         });
-        
+
         const data = await res.json();
-        
-        if (!res.ok || !data.secure_url) {
-          throw new Error("Cloudinary upload failed");
-        }
-        
-        uploadedImageUrl = data.secure_url; 
-      } catch (error) {
-        console.error("Cloudinary upload failed:", error);
-        alert("Failed to upload image. Please try again.");
+
+        if (!res.ok || !data.secure_url) throw new Error('Cloudinary upload failed');
+        uploadedImageUrl = data.secure_url;
+      } catch (err) {
+        console.error('Cloudinary upload failed:', err);
+        alert('Failed to upload image. Please try again.');
         setIsSubmitting(false);
         return;
       }
@@ -212,15 +161,15 @@ export default function ReviewsPage() {
     }]);
 
     if (insertError) {
-      console.error("Supabase insert failed:", insertError);
-      alert("Something went wrong saving the review.");
+      console.error('Supabase insert failed:', insertError);
+      alert('Something went wrong saving the review.');
     } else {
       setIsModalOpen(false);
       setImageFile(null);
       setRating(5);
-      fetchReviews(true); 
+      fetchReviews(true);
     }
-    
+
     setIsSubmitting(false);
   };
 
@@ -238,8 +187,8 @@ export default function ReviewsPage() {
         <p className="text-[#1B342B]/70 font-light max-w-2xl mx-auto text-sm md:text-base leading-relaxed mb-8">
           The greatest privilege of our artistry is being part of your most cherished celebrations across the globe.
         </p>
-        
-        <button 
+
+        <button
           onClick={() => setIsModalOpen(true)}
           className="border border-[#1B342B] text-[#1B342B] px-8 py-3 rounded-sm hover:bg-[#1B342B] hover:text-[#FDFBF7] transition-all duration-500 uppercase text-xs tracking-[0.2em] font-bold"
         >
@@ -266,18 +215,18 @@ export default function ReviewsPage() {
         ) : (
           <div className="columns-1 md:columns-2 lg:columns-3 gap-8 space-y-8">
             {reviews.map((review) => (
-              <div 
-                key={review.id} 
+              <div
+                key={review.id}
                 className="break-inside-avoid bg-white border border-[#1B342B]/10 p-8 rounded-sm shadow-sm hover:shadow-xl transition-all duration-500 group"
               >
                 {review.image_url && (
                   <div className="relative w-full h-64 mb-6 rounded-sm overflow-hidden bg-[#1B342B]/5">
-                    <CldImage 
-                      src={review.image_url} 
-                      alt={`Review by ${review.name}`} 
-                      fill 
-                      format="auto"    
-                      quality="auto"   
+                    <CldImage
+                      src={review.image_url}
+                      alt={`Review by ${review.name}`}
+                      fill
+                      format="auto"
+                      quality="auto"
                       className="object-cover transform transition-transform duration-[10s] group-hover:scale-105"
                       sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
                     />
@@ -309,7 +258,7 @@ export default function ReviewsPage() {
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm transition-opacity">
           <div className="bg-[#FDFBF7] w-full max-w-2xl rounded-sm p-8 md:p-12 relative max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl">
-            <button 
+            <button
               onClick={() => setIsModalOpen(false)}
               className="absolute top-6 right-6 text-[#1B342B]/50 hover:text-[#1B342B] transition-transform hover:rotate-90 duration-300"
             >
@@ -337,9 +286,9 @@ export default function ReviewsPage() {
                 <label className="text-[10px] uppercase tracking-[0.15em] font-bold text-[#1B342B]/80">Rating</label>
                 <div className="flex space-x-2">
                   {starArray.map((star) => (
-                    <button 
-                      key={star} 
-                      type="button" 
+                    <button
+                      key={star}
+                      type="button"
                       onClick={() => setRating(star)}
                       className="focus:outline-none transition-transform hover:scale-110"
                     >
@@ -361,8 +310,8 @@ export default function ReviewsPage() {
                   <span>Attach a Photo (Optional)</span>
                   <span className="font-medium text-[#1B342B]/40 normal-case tracking-normal">Max 5MB</span>
                 </label>
-                <input 
-                  type="file" 
+                <input
+                  type="file"
                   accept="image/*"
                   onChange={(e) => setImageFile(e.target.files ? e.target.files[0] : null)}
                   className="w-full text-sm text-[#1B342B]/70 file:mr-4 file:py-3 file:px-6 file:rounded-sm file:border-0 file:text-[10px] file:font-bold file:uppercase file:tracking-[0.2em] file:bg-[#1B342B]/5 file:text-[#1B342B] hover:file:bg-[#1B342B]/10 cursor-pointer border border-[#1B342B]/15 bg-white rounded-sm transition-colors"
@@ -370,22 +319,19 @@ export default function ReviewsPage() {
               </div>
 
               <div className="pt-4">
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   disabled={isSubmitting}
-                  className="w-full bg-[#1B342B] text-[#FDFBF7] px-8 py-4.5 rounded-sm hover:bg-[#A67C52] transition-colors duration-500 uppercase text-[11px] tracking-[0.2em] font-bold disabled:opacity-50 shadow-md hover:shadow-lg flex justify-center items-center h-14"
+                  className="w-full bg-[#1B342B] text-[#FDFBF7] px-8 rounded-sm hover:bg-[#A67C52] transition-colors duration-500 uppercase text-[11px] tracking-[0.2em] font-bold disabled:opacity-50 shadow-md hover:shadow-lg flex justify-center items-center h-14"
                 >
                   {isSubmitting ? (
                     <div className="flex items-center space-x-3">
                       <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
                       <span>Publishing...</span>
                     </div>
-                  ) : (
-                    'Publish Review'
-                  )}
+                  ) : 'Publish Review'}
                 </button>
               </div>
-
             </form>
           </div>
         </div>

@@ -4,6 +4,12 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import { downloadInvoicePDF } from '@/lib/utils/pdf';
+import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+
+
+
+
+
 
 // --- GEO-LOCATION CURRENCY LOGIC ---
 const detectUserCurrency = () => {
@@ -24,91 +30,114 @@ const detectUserCurrency = () => {
   }
 };
 
+
+type ShippingAddress = {
+  full_name: string;
+  street_address: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country: string;
+};
+
+type Order = {
+  id: string;
+  user_id: string;
+  status: string;
+  total_amount: number;
+  created_at: string;
+  razorpay_order_id?: string;
+
+  // ✅ ADD THIS LINE (THIS FIXES YOUR ERROR)
+  shipping_address?: ShippingAddress;
+};
+
+
+
 export default function MyOrdersPage() {
   const router = useRouter();
-  const [orders, setOrders] = useState<any[]>([]);
+const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   
   // Track which order is currently being generated into a PDF
   const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
   
   // Required for the hidden PDF template data binding
-  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   
   const [currency, setCurrency] = useState({ code: 'INR', symbol: '₹', rate: 1 });
 
   // 🔥 MASTER FIX: Auth Hydration & Realtime Cleanup
-  useEffect(() => {
-    setCurrency(detectUserCurrency());
+useEffect(() => {
 
-    let channel: any;
-    let isMounted = true;
+  setCurrency(detectUserCurrency());
 
-    const loadOrders = async (userId: string) => {
-      setLoading(true);
+  let channel: any;
+  let isMounted = true;
 
-      const { data, error } = await supabase
-        .from('orders')
-        .select(`*, shipping_address:user_addresses(*)`)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+  const setup = async () => {
 
-      if (!isMounted) return;
+    const { data: { session } } = await supabase.auth.getSession();
 
-      if (error) {
-        console.error('Order fetch error:', error);
-      } else {
-        setOrders(data || []);
-      }
+    if (!session?.user) {
+      router.replace("/login");
+      return;
+    }
 
-      setLoading(false);
+    const userId = session.user.id;
 
-      // REALTIME (safe & scoped to user)
-      channel = supabase
-        .channel(`orders-${userId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'orders',
-            filter: `user_id=eq.${userId}`,
-          },
-          (payload) => {
-            setOrders((prev) =>
-              prev.map((o) =>
-                o.id === payload.new.id
-                  ? { ...o, status: payload.new.status }
-                  : o
-              )
-            );
-          }
-        )
-        .subscribe();
-    };
+    setLoading(true);
 
-    // 🔐 AUTH LISTENER (THE KEY FIX)
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        if (!session?.user) {
-          setLoading(false);
-          router.replace('/login');
-          return;
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*, shipping_address:user_addresses(*)")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (!isMounted) return;
+
+    if (!error) setOrders(data || []);
+
+    setLoading(false);
+
+    channel = supabase
+      .channel(`orders-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "orders",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload: RealtimePostgresChangesPayload<any>) => {
+
+          setOrders((prev) =>
+            prev.map((order) =>
+              order.id === payload.new.id
+                ? { ...order, ...payload.new }
+                : order
+            )
+          );
+
         }
+      )
+      .subscribe();
 
-        await loadOrders(session.user.id);
-      }
-    );
+  };
 
-    return () => {
-      isMounted = false;
-      if (channel) supabase.removeChannel(channel);
-      authListener.subscription.unsubscribe();
-    };
-  }, []); // 🔥 EMPTY DEP ARRAY PREVENTS ROUTER RE-RENDER LOOP
+  setup();
+
+  return () => {
+    isMounted = false;
+    if (channel) supabase.removeChannel(channel);
+  };
+
+}, []);
+ // 🔥 EMPTY DEP ARRAY PREVENTS ROUTER RE-RENDER LOOP
 
   // --- DIRECT PDF DOWNLOAD LOGIC ---
-  const handleDownloadReceipt = async (order: any) => {
+const handleDownloadReceipt = async (order: Order) => {
     setDownloadingOrderId(order.id);
     setSelectedOrder(order); 
     
