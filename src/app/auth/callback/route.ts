@@ -1,28 +1,33 @@
-import { createServerClient } from '@supabase/ssr'
 import { NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
+import { createClient } from '@/lib/supabase/server'
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
+  const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
 
   if (code) {
-    // ✅ await cookies() — required in Next.js 15+
-    const cookieStore = await cookies()
+    const supabase = await createClient()
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll: () => cookieStore.getAll(),
-          setAll: (c) => c.forEach(({ name, value, options }) => cookieStore.set(name, value, options)),
-        },
+    if (!error && data.session) {
+      const userId = data.session.user.id
+
+      // ✅ Check if Google OAuth user needs to complete their profile
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('phone_number')
+        .eq('id', userId)
+        .maybeSingle()
+
+      // ✅ If no phone number → send to complete-profile, else home
+      if (!profile?.phone_number) {
+        return NextResponse.redirect(new URL('/complete-profile', origin))
       }
-    )
 
-    await supabase.auth.exchangeCodeForSession(code)
+      return NextResponse.redirect(new URL('/', origin))
+    }
   }
 
-  return NextResponse.redirect(new URL('/', request.url))
+  // Auth failed → back to login
+  return NextResponse.redirect(new URL('/login', origin))
 }

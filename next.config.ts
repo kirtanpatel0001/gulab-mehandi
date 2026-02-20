@@ -4,16 +4,14 @@ const nextConfig = {
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: 'res.cloudinary.com',
-        port: '',
-        pathname: '/**',
+        hostname: '*.supabase.co',  // ✅ Allows your Supabase storage URLs
       },
       {
         protocol: 'https',
-        hostname: 'images.unsplash.com',
+        hostname: 'res.cloudinary.com', // ✅ Allows future Cloudinary uploads
       },
     ],
   },
 };
 
-export default nextConfig;
+module.exports = nextConfig;
